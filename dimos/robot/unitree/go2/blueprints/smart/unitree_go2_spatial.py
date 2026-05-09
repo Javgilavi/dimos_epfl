@@ -24,7 +24,8 @@ unitree_go2_spatial = autoconnect(
     unitree_go2,
     SpatialMemory.blueprint(),
     PerceiveLoopSkill.blueprint(),
-    SecurityModule.blueprint(camera_info=GO2Connection.camera_info_static),
+    # SecurityModule disabled to free ~3.3 GiB of VRAM (so Moondream2 fits on the RTX 5070 8 GB).
+    # SecurityModule.blueprint(camera_info=GO2Connection.camera_info_static),
 ).global_config(n_workers=8)
 
 __all__ = ["unitree_go2_spatial"]

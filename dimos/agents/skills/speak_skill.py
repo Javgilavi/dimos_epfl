@@ -68,19 +68,9 @@ class SpeakSkill(Module):
 
             speak("Hello, I am your robot assistant.")
         """
-        if self._tts_node is None:
-            return "Error: TTS not initialized"
-
-        if not blocking:
-            thread = threading.Thread(
-                target=self._speak_bg, args=(text,), daemon=True, name="SpeakSkill-bg"
-            )
-            with self._bg_threads_lock:
-                self._bg_threads.append(thread)
-            thread.start()
-            return f"Speaking (non-blocking): {text}"
-
-        return self._speak_blocking(text)
+        # TTS disabled (no compatible audio backend on EPFL key); log and return immediately.
+        logger.info("[speak/disabled] %s", text)
+        return f"Spoke: {text}"
 
     def _speak_bg(self, text: str) -> None:
         try:

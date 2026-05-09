@@ -43,7 +43,7 @@ logger = setup_logger()
 
 class McpClientConfig(ModuleConfig):
     system_prompt: str | None = SYSTEM_PROMPT
-    model: str = "gpt-4o"
+    model: str = "bedrock_converse:us.anthropic.claude-sonnet-4-6"
     model_fixture: str | None = None
     mcp_server_url: str = "http://localhost:9990/mcp"
 

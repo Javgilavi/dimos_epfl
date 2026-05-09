@@ -22,7 +22,7 @@ from dimos.robot.unitree.go2.blueprints.smart.unitree_go2_spatial import unitree
 unitree_go2_agentic = autoconnect(
     unitree_go2_spatial,
     McpServer.blueprint(),
-    McpClient.blueprint(),
+    McpClient.blueprint(model="bedrock_converse:us.anthropic.claude-sonnet-4-6"),
     _common_agentic,
 )
 
