@@ -1,333 +1,221 @@
-<div align="center">
+# DimOS — EPFL fork (Go2 + Bedrock Claude Sonnet 4.6)
 
-<img width="1000" alt="banner_bordered_trimmed" src="https://github.com/user-attachments/assets/64f13b39-da06-4f58-add0-cfc44f04db4e" />
+This fork ships an agentic Unitree Go2 stack wired to **AWS Bedrock Claude Sonnet 4.6** as the LLM backend, with a few patches over upstream:
 
-<h2>The Agentive Operating System for Physical Space</h2>
+- McpClient default model = `bedrock_converse:us.anthropic.claude-sonnet-4-6`
+- TTS (`speak` skill) is a no-op — avoids OpenAI TTS auth errors when using non-OpenAI keys
+- `SecurityModule` removed from the spatial blueprint to free ~3.3 GiB VRAM on 8 GB cards (RTX 5070, 4070, etc.)
 
-[![Discord](https://img.shields.io/discord/1341146487186391173?style=flat-square&logo=discord&logoColor=white&label=Discord&color=5865F2)](https://discord.gg/dimos)
-[![Stars](https://img.shields.io/github/stars/dimensionalOS/dimos?style=flat-square)](https://github.com/dimensionalOS/dimos/stargazers)
-[![Forks](https://img.shields.io/github/forks/dimensionalOS/dimos?style=flat-square)](https://github.com/dimensionalOS/dimos/fork)
-[![Contributors](https://img.shields.io/github/contributors/dimensionalOS/dimos?style=flat-square)](https://github.com/dimensionalOS/dimos/graphs/contributors)
-![Nix](https://img.shields.io/badge/Nix-flakes-5277C3?style=flat-square&logo=NixOS&logoColor=white)
-![NixOS](https://img.shields.io/badge/NixOS-supported-5277C3?style=flat-square&logo=NixOS&logoColor=white)
-![CUDA](https://img.shields.io/badge/CUDA-supported-76B900?style=flat-square&logo=nvidia&logoColor=white)
-[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
+The original upstream README is preserved as [README2.md](./README2.md).
 
-<a href="https://trendshift.io/repositories/23169" target="_blank"><img src="https://trendshift.io/api/badge/repositories/23169" alt="dimensionalOS%2Fdimos | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+---
 
-<big><big>
+## 1. Prerequisites
 
-[Hardware](#hardware) •
-[Installation](#installation) •
-[Agent CLI & MCP](#agent-cli-and-mcp) •
-[Blueprints](#blueprints) •
-[Development](#development)
+- Ubuntu 22.04 or 24.04, Python 3.12, NVIDIA driver + CUDA 12.x
+- AWS account with Bedrock access enabled (cross-region inference profile for Anthropic). EPFL workshop credentials work.
+- For the **real robot**: a Unitree Go2, reachable from your laptop on `192.168.123.0/24` (over Ethernet to the rear LAN port, or once the robot is in STA mode on a shared WiFi). The robot's WebRTC bridge listens on `192.168.123.161`.
+- For the **simulator**: nothing extra (MuJoCo is bundled).
 
-⚠️ **Pre-Release Beta** ⚠️
+---
 
-</big></big>
-
-</div>
-
-# Intro
-
-Dimensional is the modern operating system for generalist robotics. We are setting the next-generation SDK standard, integrating with the majority of robot manufacturers.
-
-With a simple install and no ROS required, build physical applications entirely in python that run on any humanoid, quadruped, or drone.
-
-Dimensional is agent native -- "vibecode" your robots in natural language and build (local & hosted) multi-agent systems that work seamlessly with your hardware. Agents run as native modules — subscribing to any embedded stream, from perception (lidar, camera) and spatial memory down to control loops and motor drivers.
-<table>
-  <tr>
-    <td align="center" width="50%">
-      <a href="docs/capabilities/navigation/native/index.md"><img src="assets/readme/navigation.gif" alt="Navigation" width="100%"></a>
-    </td>
-    <td align="center" width="50%">
-      <img src="assets/readme/perception.png" alt="Perception" width="100%">
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <h3><a href="docs/capabilities/navigation/native/index.md">Navigation and Mapping</a></h3>
-      SLAM, dynamic obstacle avoidance, route planning, and autonomous exploration — via both DimOS native and ROS<br><a href="https://x.com/stash_pomichter/status/2010471593806545367">Watch video</a>
-    </td>
-    <td align="center" width="50%">
-      <h3>Perception</h3>
-      Detectors, 3d projections, VLMs, Audio processing
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <a href="docs/capabilities/agents/readme.md"><img src="assets/readme/agentic_control.gif" alt="Agents" width="100%"></a>
-    </td>
-    <td align="center" width="50%">
-      <img src="assets/readme/spatial_memory.gif" alt="Spatial Memory" width="100%">
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <h3><a href="docs/capabilities/agents/readme.md">Agentive Control, MCP</a></h3>
-      "hey Robot, go find the kitchen"<br><a href="https://x.com/stash_pomichter/status/2015912688854200322">Watch video</a>
-    </td>
-    <td align="center" width="50%">
-      <h3>Spatial Memory</a></h3>
-      Spatio-temporal RAG, Dynamic memory, Object localization and permanence<br><a href="https://x.com/stash_pomichter/status/1980741077205414328">Watch video</a>
-    </td>
-  </tr>
-</table>
-
-
-# Hardware
-
-<table>
-  <tr>
-    <td align="center" width="20%">
-      <h3>Quadruped</h3>
-      <img width="245" height="1" src="assets/readme/spacer.png">
-    </td>
-    <td align="center" width="20%">
-      <h3>Humanoid</h3>
-      <img width="245" height="1" src="assets/readme/spacer.png">
-    </td>
-    <td align="center" width="20%">
-      <h3>Arm</h3>
-      <img width="245" height="1" src="assets/readme/spacer.png">
-    </td>
-    <td align="center" width="20%">
-      <h3>Drone</h3>
-      <img width="245" height="1" src="assets/readme/spacer.png">
-    </td>
-    <td align="center" width="20%">
-      <h3>Misc</h3>
-      <img width="245" height="1" src="assets/readme/spacer.png">
-    </td>
-  </tr>
-
-  <tr>
-    <td align="center" width="20%">
-      🟩 <a href="docs/platforms/quadruped/go2/index.md">Unitree Go2 pro/air</a><br>
-      🟥 <a href="dimos/robot/unitree/b1">Unitree B1</a><br>
-    </td>
-    <td align="center" width="20%">
-      🟨 <a href="docs/platforms/humanoid/g1/index.md">Unitree G1</a><br>
-    </td>
-    <td align="center" width="20%">
-      🟨 <a href="docs/capabilities/manipulation/readme.md">Xarm</a><br>
-      🟨 <a href="docs/capabilities/manipulation/readme.md">AgileX Piper</a><br>
-    </td>
-    <td align="center" width="20%">
-      🟧 <a href="dimos/robot/drone/README.md">MAVLink</a><br>
-      🟧 <a href="dimos/robot/drone/README.md">DJI Mavic</a><br>
-    </td>
-    <td align="center" width="20%">
-      🟥 <a href="https://github.com/dimensionalOS/openFT-sensor">Force Torque Sensor</a><br>
-    </td>
-  </tr>
-</table>
-<br>
-<div align="right">
-🟩 stable 🟨 beta 🟧 alpha 🟥 experimental
-
-</div>
-
-> [!IMPORTANT]
-> 🤖 Direct your favorite Agent (OpenClaw, Claude Code, etc.) to [AGENTS.md](AGENTS.md) and our [CLI and MCP](#agent-cli-and-mcp) interfaces to start building powerful Dimensional applications.
-
-# Installation
-
-## Interactive Install
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/dimensionalOS/dimos/main/scripts/install.sh | bash
-```
-
-> See [`scripts/install.sh --help`](scripts/install.sh) for non-interactive and advanced options.
-
-## Manual System Install
-
-To set up your system dependencies, follow one of these guides:
-
-- 🟩 [Ubuntu 22.04 / 24.04](docs/installation/ubuntu.md)
-- 🟩 [NixOS / General Linux](docs/installation/nix.md)
-- 🟧 [macOS](docs/installation/osx.md)
-
-> Full system requirements, tested configs, and dependency tiers: [docs/requirements.md](docs/requirements.md)
-
-## Python Install
-
-### Quickstart
+## 2. Install
 
 ```bash
-uv venv --python "3.12"
+git clone https://github.com/Javgilavi/dimos_epfl.git ~/robohack-epfl/dimos
+cd ~/robohack-epfl/dimos
+
+uv venv --python 3.12
 source .venv/bin/activate
-uv pip install 'dimos[unitree]'
 
-# Replay a recorded quadruped session (no hardware needed)
-# NOTE: First run will show a black rerun window while ~75 MB downloads from LFS
-dimos --replay run unitree-go2
+# Core dimos extras + AWS Bedrock client
+uv pip install -e '.[base,unitree,sim,agents,perception,misc,cuda]'
+uv pip install langchain-aws boto3
 ```
+
+One-time per-boot kernel tweaks DimOS needs for LCM (it'll prompt for sudo):
+```bash
+sudo sh -c 'ip link set lo multicast on; ip route add 224.0.0.0/4 dev lo; sysctl -w net.core.rmem_max=67108864 net.core.rmem_default=67108864'
+```
+
+---
+
+## 3. Create `.env`
+
+Create a file `~/robohack-epfl/dimos/.env` with **your** credentials. Template:
 
 ```bash
-# Add perception (object detection, VLMs — heavy dependencies, needs to download GBs)
-uv pip install 'dimos[unitree,perception]'
+# AWS Bedrock (Claude Sonnet 4.6 in us-west-2)
+AWS_DEFAULT_REGION=us-west-2
+AWS_ACCESS_KEY_ID=ASIA...
+AWS_SECRET_ACCESS_KEY=...
+AWS_SESSION_TOKEN=...                    # only needed for STS / temporary creds
 
-# Add simulation support
-uv pip install 'dimos[unitree,sim]'
-
-# Run quadruped in MuJoCo simulation
-dimos --simulation run unitree-go2
-
-# Run humanoid in simulation
-dimos --simulation run unitree-g1-sim
+# Real robot only — IP of the Go2 WebRTC bridge.
+# .161 is the AI module on the robot's internal LAN.
+# After STA-mode reconfig (robot on your WiFi/hotspot), use whatever IP your DHCP gave it.
+ROBOT_IP=192.168.123.161
 ```
+
+**Important:**
+- `.env` is loaded automatically by dimos via `python-dotenv`. No need to `source` it.
+- **Never commit `.env`** — add it to `.gitignore`:
+  ```bash
+  grep -qxF '.env' .gitignore || echo '.env' >> .gitignore
+  ```
+- AWS STS session tokens (the `ASIA...` flavour) expire in 1–12 hours. When the agent suddenly stops with `ExpiredTokenException`, regenerate them and update `.env`.
+
+### Where to get AWS credentials
+
+If you're at an EPFL workshop, the credentials should be provided to you (region, access key, secret, session token).
+
+If you're on your own AWS account:
+1. AWS Console → IAM → create a user with `AmazonBedrockFullAccess` (or a custom policy with `bedrock:InvokeModel` on the model ARN).
+2. Create access keys.
+3. AWS Console → Bedrock → **Model access** → enable `Anthropic Claude Sonnet 4.6` (and any other models you want).
+
+### Find the robot IP
+
+- **On the robot's internal LAN (Ethernet to rear port):** `192.168.123.161` is the WebRTC bridge. `192.168.123.18` is the firmware-update UI (different module — don't confuse).
+- **After STA-mode reconfig (robot joined your WiFi/hotspot):** the IP comes from your router's DHCP. Check the router's connected-clients page, or scan with `nmap -sn 192.168.43.0/24` (Android hotspot subnet) / `nmap -sn 172.20.10.0/28` (iPhone hotspot subnet).
+- Quick reachability check: `ping -c 2 $ROBOT_IP` should reply <10 ms.
+
+---
+
+## 4. Run on the **real robot** (no simulator)
+
+In **Terminal A**:
 
 ```bash
-# Control a real robot (Unitree quadruped over WebRTC)
-export ROBOT_IP=<YOUR_ROBOT_IP>
-dimos run unitree-go2
+cd ~/robohack-epfl/dimos
+source .venv/bin/activate
+
+# Confirm robot is reachable
+ping -c 2 $ROBOT_IP
+
+# Launch the agentic stack against the real robot
+dimos run unitree-go2-agentic
 ```
 
-# Featured Runfiles
+Wait for these log lines (boot ≈ 2 minutes the first time):
+```
+GO2Connection mode: ai
+🟢 Peer Connection State: connected
+🟢 Data Channel Verification: ✅ OK
+Discovered tools from MCP server. n_tools=22 tools=[...]
+```
 
-| Run command | What it does |
-|-------------|-------------|
-| `dimos --replay run unitree-go2` | Quadruped navigation replay — SLAM, costmap, A* planning |
-| `dimos --replay --replay-db go2_bigoffice run unitree-go2-memory` | Quadruped temporal memory replay |
-| `dimos --simulation run unitree-go2-agentic` | Quadruped agentic + MCP server in simulation |
-| `dimos --simulation run unitree-g1` | Humanoid in MuJoCo simulation |
-| `dimos --replay run drone-basic` | Drone video + telemetry replay |
-| `dimos --replay run drone-agentic` | Drone + LLM agent with flight skills (replay) |
-| `dimos run demo-camera` | Webcam demo — no hardware needed |
-| `dimos run keyboard-teleop-xarm7` | Keyboard teleop with mock xArm7 (requires `dimos[manipulation]` extra) |
-| `dimos --simulation run unitree-go2-agentic-ollama` | Quadruped agentic with local LLM (requires [Ollama](https://ollama.com) + `ollama serve`) |
+When `n_tools=22` appears, the agent is ready.
 
-> Full blueprint docs: [docs/usage/blueprints.md](docs/usage/blueprints.md)
+---
 
-# Agent CLI and MCP
+## 5. Run in the **simulator** (no robot needed)
 
-The `dimos` CLI manages the full lifecycle — run blueprints, inspect state, interact with agents, and call skills via MCP.
+Same launch, just add `--simulation`:
 
 ```bash
-dimos run unitree-go2-agentic --daemon   # Start in background
-dimos status                              # Check what's running
-dimos log -f                              # Follow logs
-dimos agent-send "explore the room"       # Send agent a command
-dimos mcp list-tools                      # List available MCP skills
-dimos mcp call relative_move --arg forward=0.5  # Call a skill directly
-dimos stop                                # Shut down
+cd ~/robohack-epfl/dimos
+source .venv/bin/activate
+
+__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia MUJOCO_GL=glfw \
+    dimos --simulation run unitree-go2-agentic
 ```
 
-> Full CLI reference: [docs/usage/cli.md](docs/usage/cli.md)
+A MuJoCo window opens with the simulated Go2. Wait for the same `Discovered tools from MCP server. n_tools=22` line.
 
+First run downloads ~2 GB of MuJoCo Menagerie + Moondream2. Subsequent runs are much faster.
 
-# Usage
+---
 
-## Use DimOS as a Library
+## 6. Chat with the robot — `humancli`
 
-See below a simple robot connection module that sends streams of continuous `cmd_vel` to the robot and receives `color_image` to a simple `Listener` module. DimOS Modules are subsystems on a robot that communicate with other modules using standardized messages.
+Open **Terminal B** (after you see `n_tools=22` in Terminal A):
 
-```py
-import threading, time, numpy as np
-from dimos.core.coordination.blueprints import autoconnect
-from dimos.core.core import rpc
-from dimos.core.module import Module
-from dimos.core.stream import In, Out
-from dimos.msgs.geometry_msgs import Twist
-from dimos.msgs.sensor_msgs import Image, ImageFormat
-
-class RobotConnection(Module):
-    cmd_vel: In[Twist]
-    color_image: Out[Image]
-
-    @rpc
-    def start(self):
-        threading.Thread(target=self._image_loop, daemon=True).start()
-
-    def _image_loop(self):
-        while True:
-            img = Image.from_numpy(
-                np.zeros((120, 160, 3), np.uint8),
-                format=ImageFormat.RGB,
-                frame_id="camera_optical",
-            )
-            self.color_image.publish(img)
-            time.sleep(0.2)
-
-class Listener(Module):
-    color_image: In[Image]
-
-    @rpc
-    def start(self):
-        self.color_image.subscribe(lambda img: print(f"image {img.width}x{img.height}"))
-
-if __name__ == "__main__":
-    autoconnect(
-        RobotConnection.blueprint(),
-        Listener.blueprint(),
-    ).build().loop()
+```bash
+cd ~/robohack-epfl/dimos
+source .venv/bin/activate
+humancli
 ```
 
-## Blueprints
-
-Blueprints are instructions for how to construct and wire modules. We compose them with
-`autoconnect(...)`, which connects streams by `(name, type)` and returns a `Blueprint`.
-
-Blueprints can be composed, remapped, and have transports overridden if `autoconnect()` fails due to conflicting variable names or `In[]` and `Out[]` message types.
-
-A blueprint example that connects the image stream from a robot to an MCP-backed LLM agent for reasoning and action execution.
-```py
-from dimos.core.coordination.blueprints import autoconnect
-from dimos.core.transport import LCMTransport
-from dimos.msgs.sensor_msgs import Image
-from dimos.robot.unitree.go2.connection import go2_connection
-from dimos.agents.mcp.mcp_client import McpClient
-from dimos.agents.mcp.mcp_server import McpServer
-
-blueprint = autoconnect(
-    go2_connection(),
-    McpServer.blueprint(),
-    McpClient.blueprint(),
-).transports({("color_image", Image): LCMTransport("/color_image", Image)})
-
-# Run the blueprint
-if __name__ == "__main__":
-    blueprint.build().loop()
+Then type messages:
+```
+hello
+explore the room
+what can you do?
+go to the chair
+find a door
+stop
 ```
 
-## Library API
+The agent has 22 tools available: `navigate_with_text`, `begin_exploration`, `end_exploration`, `start_patrol`, `look_out_for`, `tag_location`, `follow_person`, `execute_sport_command`, `relative_move`, `wait`, `speak` (no-op TTS — text only), and more.
 
-- [Modules](docs/usage/modules.md)
-- [LCM](docs/usage/lcm.md)
-- [Blueprints](docs/usage/blueprints.md)
-- [Transports](docs/usage/transports/index.md) — LCM, SHM, DDS, ROS 2
-- [Data Streams](docs/usage/data_streams/README.md)
-- [Configuration](docs/usage/configuration.md)
-- [Visualization](docs/usage/visualization.md)
+### Other ways to interact
 
-## Demos
+- **Browser chat**: open `http://localhost:5555` once dimos is running.
+- **Web command-center map**: `http://localhost:7779` — click on the costmap to send a navigation goal directly (bypasses the LLM).
 
-<img src="assets/readme/dimos_demo.gif" alt="DimOS Demo" width="100%">
+---
 
-# Development
+## 7. Quick reference — common commands
 
-## Develop on DimOS
+```bash
+# kill all dimos processes (after Ctrl-C if anything lingers)
+pkill -f 'dimos|mujoco_process' 2>/dev/null ; sleep 3
 
-```sh
-export GIT_LFS_SKIP_SMUDGE=1
-git clone https://github.com/dimensionalOS/dimos.git
-cd dimos
+# Probe MCP server tool catalog while dimos is running
+curl -sS -X POST http://localhost:9990/mcp \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | head -c 400
 
-uv sync --extra all
+# Verify Bedrock auth before launching
+python -c "
+import boto3
+print(boto3.client('sts').get_caller_identity()['Arn'])
+"
 
-# Run fast test suite
-uv run pytest dimos
+# Verify Bedrock model is callable
+python -c "
+from langchain.chat_models import init_chat_model
+print(init_chat_model('bedrock_converse:us.anthropic.claude-sonnet-4-6').invoke('reply pong').content)
+"
 ```
 
+---
 
-## Multi Language Support
+## 8. Switching the robot to your own WiFi (STA mode)
 
-Python is our glue and prototyping language, but we support many languages via LCM interop.
+By default the Go2 broadcasts its own AP (`Go2-XXXX_5G`) and your laptop must join it to talk. To put the robot on your phone hotspot or office router instead:
 
-Check our language interop examples:
-- [C++](examples/language-interop/cpp/)
-- [Lua](examples/language-interop/lua/)
-- [TypeScript](examples/language-interop/ts/)
+1. Connect ethernet to the robot's rear LAN port.
+2. Set a static IP on your wired interface: `192.168.123.99/24`, no gateway, never-default.
+3. SSH into the AI module: `ssh unitree@192.168.123.161` (passwords to try: `123`, `unitree`, `Unitree0408`).
+4. On the robot:
+   ```bash
+   sudo iw reg set CH    # or your country code
+   sudo nmcli device wifi connect "YOUR_SSID" password "YOUR_PASS"
+   sudo nmcli connection modify "YOUR_SSID" connection.autoconnect yes connection.autoconnect-priority 100
+   ip -4 addr show wlan0 | grep inet     # write down the new IP
+   ```
+5. Update `ROBOT_IP=` in `.env` to the new IP.
+
+The other path is BLE provisioning from the laptop (no SSH/passwords needed):
+```bash
+dimos go2tool connect-wifi --name Go2_14082 --ssid "YOUR_SSID" --password "YOUR_PASS" --country CH
+```
+
+---
+
+## 9. Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `n_tools=0` after launch | EPFL/AWS endpoint cold-starting, or skill containers not registered yet | Wait up to 3 minutes; if persistent, restart |
+| Agent silent, no humancli reply | Bedrock auth expired (`ExpiredTokenException` in log) | Refresh `AWS_SESSION_TOKEN` in `.env`, restart |
+| `Failed to find Rerun Viewer` on launch | venv not on PATH | Use the launch command above (it sets PATH); or `--viewer none` |
+| `CUDA out of memory` on `look_out_for` | Moondream2 + other models exceed 8 GB | Already mitigated by removing SecurityModule. If still OOM, edit `unitree_go2_spatial.py` and remove `PerceiveLoopSkill` too |
+| Camera frozen on real robot, restart shows blank | Stale WebRTC peer in robot firmware | Power-cycle the robot, wait 10 s, relaunch |
+| `ICE: checking` lingers on connect | Previous client still held by the robot's dispatcher | Kill all dimos, wait 60 s, retry; or reboot robot |
+| `Tool call started with UUID...` repeated forever (`observe`) | Async tool returns a promise the agent retries on; known dimos design quirk | Don't use `observe` for counting/Q&A; use `navigate_with_text` for spatial queries |
+
+For the **upstream README** (full module list, capabilities deep dive, blueprint catalog), see [README2.md](./README2.md).
