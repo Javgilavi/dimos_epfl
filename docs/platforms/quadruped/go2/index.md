@@ -87,6 +87,82 @@ dimos run unitree-go2
 
 That's it. DimOS connects via WebRTC (no jailbreak required), starts the full navigation stack, and opens the command center in your browser.
 
+On the real Go2, DimOS uses the external Jetson/USB HTTP camera by default
+instead of the native WebRTC video stream:
+
+```bash
+export GO2_EXTERNAL_CAMERA_URL=http://192.168.123.18:8888/frame
+dimos run unitree-go2
+```
+
+This replaces only the camera stream. LiDAR, odometry, and motion commands still
+come from the Go2 WebRTC connection. Simulation and replay keep their normal
+camera sources. To use the native Go2 camera again:
+
+```bash
+export GO2_USE_EXTERNAL_CAMERA=false
+```
+
+Optional camera calibration overrides:
+
+```bash
+export GO2_EXTERNAL_CAMERA_WIDTH=640
+export GO2_EXTERNAL_CAMERA_HEIGHT=480
+export GO2_EXTERNAL_CAMERA_FX=576
+export GO2_EXTERNAL_CAMERA_FY=576
+export GO2_EXTERNAL_CAMERA_CX=320
+export GO2_EXTERNAL_CAMERA_CY=240
+```
+
+### YOLO11 segmentation from the external camera
+
+For the real robot, run the Jetson USB camera server on the Jetson/camera host:
+
+```bash
+python scripts/jetson_camera_server.py --host 0.0.0.0 --port 8888 --device 0
+```
+
+Then run YOLO11 segmentation on the workstation. This publishes the same camera
+image plus segmentation outputs to DimOS LCM:
+
+```bash
+python scripts/workstation_yolo.py \
+  --stream-url http://192.168.123.18:8888/frame \
+  --model yolo11s-seg.pt \
+  --feed-dimos \
+  --cloud-url http://localhost:8080 \
+  --headless
+```
+
+Published topics:
+
+| Topic | Message |
+|-------|---------|
+| `/color_image#sensor_msgs.Image` | Raw external camera image |
+| `/yolo11/detections#vision_msgs.Detection2DArray` | YOLO boxes/classes/confidence, with segmentation-backed detections |
+| `/yolo11/annotations#foxglove_msgs.ImageAnnotations` | Boxes + mask outlines/fill for DimOS/Foxglove visualization |
+| `/yolo11/segmented_image#sensor_msgs.Image` | Camera image with YOLO masks overlaid |
+
+Use the `yolo11*-seg.pt` models for masks. Non-segmentation models still publish
+regular 2D detections, but without mask outlines.
+
+If `--cloud-url` points to robohack2026, the script also pushes the YOLO mask
+overlay into the UI camera panel and posts detections with confidence >= 0.70 to
+the UI semantic map. The object location is projected from the latest `/odom`
+pose plus the camera bearing. Tune `--semantic-distance` and `--camera-fx` if
+the markers appear too near/far or laterally shifted.
+
+In `unitree-go2-agentic`, these detections are available to the LLM through MCP
+tools:
+
+| Tool | Use |
+|------|-----|
+| `get_latest_yolo_detections` | List current YOLO detections with labels, confidence, and pixel bboxes |
+| `get_best_yolo_detection` | Get the highest-confidence bbox for a label such as `person` |
+
+This makes prompts like "what does YOLO see?" or "use YOLO to find the person
+and follow them" route through the external camera detections.
+
 ### What's Running
 
 | Module | What It Does |
