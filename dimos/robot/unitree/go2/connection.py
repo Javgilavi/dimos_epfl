@@ -13,14 +13,21 @@
 # limitations under the License.
 
 from enum import Enum
+import os
 import sys
 from threading import Thread
 import time
 from typing import TYPE_CHECKING, Any, Protocol
+from urllib.error import URLError
+from urllib.request import urlopen
 
+import cv2
+import numpy as np
 from pydantic import Field
+from reactivex import operators as ops
 from reactivex.disposable import Disposable
 from reactivex.observable import Observable
+from reactivex.subject import Subject
 import rerun.blueprint as rrb
 
 from dimos.agents.annotation import skill
@@ -66,6 +73,9 @@ class ConnectionConfig(ModuleConfig):
     mode: Go2Mode = Go2Mode.DEFAULT
 
 
+DEFAULT_GO2_EXTERNAL_CAMERA_URL = "http://192.168.123.18:8888/frame"
+
+
 class Go2ConnectionProtocol(Protocol):
     """Protocol defining the interface for Go2 robot connections."""
 
@@ -86,6 +96,28 @@ class Go2ConnectionProtocol(Protocol):
 def _camera_info_static() -> CameraInfo:
     fx, fy, cx, cy = (819.553492, 820.646595, 625.284099, 336.808987)
     width, height = (1280, 720)
+
+    return CameraInfo(
+        frame_id="camera_optical",
+        height=height,
+        width=width,
+        distortion_model="plumb_bob",
+        D=[0.0, 0.0, 0.0, 0.0, 0.0],
+        K=[fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0],
+        R=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        P=[fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0],
+        binning_x=0,
+        binning_y=0,
+    )
+
+
+def _external_camera_info_static() -> CameraInfo:
+    width = int(os.environ.get("GO2_EXTERNAL_CAMERA_WIDTH", "640"))
+    height = int(os.environ.get("GO2_EXTERNAL_CAMERA_HEIGHT", "480"))
+    fx = float(os.environ.get("GO2_EXTERNAL_CAMERA_FX", str(width * 0.9)))
+    fy = float(os.environ.get("GO2_EXTERNAL_CAMERA_FY", str(width * 0.9)))
+    cx = float(os.environ.get("GO2_EXTERNAL_CAMERA_CX", str(width / 2.0)))
+    cy = float(os.environ.get("GO2_EXTERNAL_CAMERA_CY", str(height / 2.0)))
 
     return CameraInfo(
         frame_id="camera_optical",
@@ -128,7 +160,121 @@ def make_connection(ip: str | None, cfg: GlobalConfig) -> Go2ConnectionProtocol:
         return MujocoConnection(cfg)
     else:
         assert ip is not None, "IP address must be provided"
-        return UnitreeWebRTCConnection(ip)
+        connection = UnitreeWebRTCConnection(ip)
+        use_external_camera = os.environ.get("GO2_USE_EXTERNAL_CAMERA", "true").lower() == "true"
+        if use_external_camera:
+            camera_url = os.environ.get(
+                "GO2_EXTERNAL_CAMERA_URL",
+                DEFAULT_GO2_EXTERNAL_CAMERA_URL,
+            )
+            return ExternalCameraConnection(connection, camera_url=camera_url)
+        return connection
+
+
+class ExternalCameraConnection:
+    """Real Go2 connection that replaces only the native video stream.
+
+    Lidar, odometry, and robot commands still use the wrapped
+    UnitreeWebRTCConnection. Camera frames come from the Jetson/new USB camera
+    HTTP JPEG endpoint, so DimOS visualizers, perception modules, and observe()
+    consume the external camera on real hardware. Simulation/replay do not use
+    this wrapper.
+    """
+
+    camera_info_static: CameraInfo = _external_camera_info_static()
+
+    def __init__(
+        self,
+        base: UnitreeWebRTCConnection,
+        camera_url: str,
+        fps: float | None = None,
+    ) -> None:
+        self.base = base
+        self.camera_url = camera_url
+        self.fps = fps or float(os.environ.get("GO2_EXTERNAL_CAMERA_FPS", "10"))
+
+    def start(self) -> None:
+        self.base.start()
+
+    def stop(self) -> None:
+        self.base.stop()
+
+    @simple_mcache
+    def lidar_stream(self) -> Observable:  # type: ignore[type-arg]
+        return self.base.lidar_stream()
+
+    @simple_mcache
+    def odom_stream(self) -> Observable:  # type: ignore[type-arg]
+        return self.base.odom_stream()
+
+    @simple_mcache
+    def video_stream(self) -> Observable[Image]:
+        subject: Subject[Image] = Subject()
+        running = True
+        interval = 1.0 / max(self.fps, 0.1)
+
+        def fetch_loop() -> None:
+            failures = 0
+            while running:
+                started = time.time()
+                try:
+                    with urlopen(self.camera_url, timeout=3.0) as response:
+                        data = response.read()
+                    arr = np.frombuffer(data, dtype=np.uint8)
+                    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                    if frame is None:
+                        raise ValueError("HTTP camera returned undecodable JPEG")
+                    image = Image.from_opencv(
+                        frame,
+                        frame_id="camera_optical",
+                        ts=time.time(),
+                    )
+                    failures = 0
+                    subject.on_next(image)
+                except (URLError, TimeoutError, OSError, ValueError) as exc:
+                    failures += 1
+                    if failures == 1 or failures % 20 == 0:
+                        logger.warning(
+                            "External Go2 camera unavailable at %s (%s failures): %s",
+                            self.camera_url,
+                            failures,
+                            exc,
+                        )
+                    time.sleep(0.5)
+                elapsed = time.time() - started
+                if elapsed < interval:
+                    time.sleep(interval - elapsed)
+
+        thread = Thread(target=fetch_loop, daemon=True, name="go2-external-camera")
+        thread.start()
+
+        def stop_stream() -> None:
+            nonlocal running
+            running = False
+            thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
+
+        return subject.pipe(ops.finally_action(stop_stream))
+
+    def move(self, twist: Twist, duration: float = 0.0) -> bool:
+        return self.base.move(twist, duration)
+
+    def standup(self) -> bool:
+        return self.base.standup()
+
+    def liedown(self) -> bool:
+        return self.base.liedown()
+
+    def balance_stand(self) -> bool:
+        return self.base.balance_stand()
+
+    def set_obstacle_avoidance(self, enabled: bool = True) -> None:
+        self.base.set_obstacle_avoidance(enabled)
+
+    def enable_rage_mode(self) -> bool:
+        return self.base.enable_rage_mode()
+
+    def publish_request(self, topic: str, data: dict) -> dict:  # type: ignore[type-arg]
+        return self.base.publish_request(topic, data)
 
 
 class ReplayConnection(UnitreeWebRTCConnection):

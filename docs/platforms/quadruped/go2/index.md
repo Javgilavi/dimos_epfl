@@ -87,6 +87,33 @@ dimos run unitree-go2
 
 That's it. DimOS connects via WebRTC (no jailbreak required), starts the full navigation stack, and opens the command center in your browser.
 
+On the real Go2, DimOS uses the external Jetson/USB HTTP camera by default
+instead of the native WebRTC video stream:
+
+```bash
+export GO2_EXTERNAL_CAMERA_URL=http://192.168.123.18:8888/frame
+dimos run unitree-go2
+```
+
+This replaces only the camera stream. LiDAR, odometry, and motion commands still
+come from the Go2 WebRTC connection. Simulation and replay keep their normal
+camera sources. To use the native Go2 camera again:
+
+```bash
+export GO2_USE_EXTERNAL_CAMERA=false
+```
+
+Optional camera calibration overrides:
+
+```bash
+export GO2_EXTERNAL_CAMERA_WIDTH=640
+export GO2_EXTERNAL_CAMERA_HEIGHT=480
+export GO2_EXTERNAL_CAMERA_FX=576
+export GO2_EXTERNAL_CAMERA_FY=576
+export GO2_EXTERNAL_CAMERA_CX=320
+export GO2_EXTERNAL_CAMERA_CY=240
+```
+
 ### What's Running
 
 | Module | What It Does |
