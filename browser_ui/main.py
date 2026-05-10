@@ -924,9 +924,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div id="sidebar">
     <!-- Mobile tab bar — hidden on desktop via CSS -->
     <div id="mobile-tabs">
-      <button class="mtab active" onclick="window._mobileTab('chat')">💬 Chat</button>
-      <button class="mtab"        onclick="window._mobileTab('cam')">📷 Camera</button>
-      <button class="mtab"        onclick="window._mobileTab('obj')">📋 Objects</button>
+      <button class="mtab active" data-tab="chat" onclick="window._mobileTab('chat')">💬 Chat</button>
+      <button class="mtab"        data-tab="cam"  onclick="window._mobileTab('cam')">📷 Camera</button>
+      <button class="mtab"        data-tab="obj"  onclick="window._mobileTab('obj')">📋 Objects</button>
     </div>
     <div id="chat-section">
       <div class="mode-toggle">
@@ -1294,7 +1294,7 @@ window._mic = (function() {
 /* ── Mobile tabs ─────────────────────────────────────────────── */
 window._mobileTab = function(tab) {
   document.querySelectorAll('.mtab').forEach(function(b) { b.classList.remove('active'); });
-  const btn = document.querySelector('.mtab[onclick*="\'' + tab + '\'"]');
+  const btn = document.querySelector('.mtab[data-tab="' + tab + '"]');
   if (btn) btn.classList.add('active');
 
   const chat   = document.getElementById('chat-section');
