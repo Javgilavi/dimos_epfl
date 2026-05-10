@@ -86,7 +86,18 @@ class PathClearance:
         if costmap is None:
             return True
 
-        return bool(np.any(costmap.grid[self.mask] == CostValues.OCCUPIED))
+        try:
+            return bool(np.any(costmap.grid[self.mask] == CostValues.OCCUPIED))
+        except Exception as exc:
+            # Don't let a transient mask-computation issue kill the local
+            # planner thread. Treat the path as blocked so the caller replans
+            # on the next tick instead of going `idle` and freezing.
+            import logging
+            logging.getLogger(__name__).warning(
+                "is_obstacle_ahead failed (%s) — treating path as blocked.",
+                exc,
+            )
+            return True
 
     def _pose_distance(self, index1: int, index2: int) -> float:
         p1 = self._path.poses[index1].position

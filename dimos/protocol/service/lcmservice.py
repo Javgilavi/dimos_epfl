@@ -119,6 +119,13 @@ class LCMService(Service):
 
     def _lcm_loop(self) -> None:
         """LCM message handling loop."""
+        # Rate-limit error spam: identical decode errors fire thousands of
+        # times per second when a publisher is misbehaving (e.g. duplicate
+        # publishers on /yolo11/annotations). We log the first occurrence,
+        # then at most one line every 30 s, with a running count.
+        _err_seen: dict[str, dict] = {}
+        _ERR_INTERVAL = 30.0
+        import time as _time
         while not self._stop_event.is_set():
             try:
                 with self._l_lock:
@@ -126,8 +133,21 @@ class LCMService(Service):
                         break
                     self.l.handle_timeout(_LCM_LOOP_TIMEOUT)
             except Exception as e:
-                stack_trace = traceback.format_exc()
-                print(f"Error in LCM handling: {e}\n{stack_trace}")
+                key = f"{type(e).__name__}:{e}"
+                now = _time.time()
+                slot = _err_seen.setdefault(key, {"first": now, "last": 0.0, "count": 0})
+                slot["count"] += 1
+                if now - slot["last"] >= _ERR_INTERVAL:
+                    slot["last"] = now
+                    if slot["count"] == 1:
+                        stack_trace = traceback.format_exc()
+                        print(f"Error in LCM handling: {e}\n{stack_trace}")
+                    else:
+                        print(
+                            f"Error in LCM handling: {e}  "
+                            f"(suppressed {slot['count']}× in {now - slot['first']:.0f}s)"
+                        )
+                        slot["count"] = 0
 
     def stop(self) -> None:
         """Stop the LCM loop."""

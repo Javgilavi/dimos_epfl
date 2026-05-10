@@ -796,8 +796,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     #cam-section { flex: 1 1 50%; min-height: 80px; padding: 9px 12px;
                    display: flex; flex-direction: column; overflow: hidden;
                    border-bottom: 1px solid #1e2d3d; }
+    /* Letterbox the camera feed: full image always visible, no crop. */
     #cam-img { width: 100%; flex: 1; border-radius: 4px; background: #0a0e14;
-               min-height: 80px; object-fit: cover; }
+               min-height: 80px; object-fit: contain; object-position: center; }
     #obj-section { flex: 1 1 50%; min-height: 80px; overflow-y: auto;
                    padding: 9px 12px; }
     table { width: 100%; border-collapse: collapse; font-size: 11px; }
@@ -805,6 +806,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     th { color: #4fc3f7; font-weight: 600; background: #0d1117; position: sticky; top: 0; }
     .hi { color: #81c784; } .lo { color: #e57373; }
     .empty-row td { color: #555; text-align: center; padding: 10px; }
+
+    /* Object labels rendered by CSS2DRenderer over the 3D scene */
+    .obj-label {
+      color: #fff; background: rgba(13,17,23,0.78); padding: 1px 6px;
+      border-radius: 6px; font-size: 10px; font-family: 'Segoe UI', sans-serif;
+      font-weight: 600; pointer-events: none; white-space: nowrap;
+      border: 1px solid rgba(79,195,247,0.35); transform: translate(-50%, -100%);
+      letter-spacing: 0.2px;
+    }
+    /* Wrapper for the CSS2DRenderer DOM layer — must overlay the canvas exactly */
+    #label-layer { position: absolute; inset: 0; pointer-events: none; }
   </style>
 </head>
 <body>
@@ -1095,6 +1107,7 @@ window._mic = (function() {
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 
 // ── Renderer ──────────────────────────────────────────────────
 const panel = document.getElementById('map-panel');
@@ -1104,6 +1117,13 @@ renderer.setSize(panel.clientWidth, panel.clientHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.15;
 panel.appendChild(renderer.domElement);
+
+// Overlay HTML label layer for object names — sits exactly on top of the canvas.
+const labelLayer = document.createElement('div');
+labelLayer.id = 'label-layer';
+panel.appendChild(labelLayer);
+const labelRenderer = new CSS2DRenderer({ element: labelLayer });
+labelRenderer.setSize(panel.clientWidth, panel.clientHeight);
 
 // ── Scene ─────────────────────────────────────────────────────
 const scene = new THREE.Scene();
@@ -1253,19 +1273,61 @@ function updateRobot(rp) {
 }
 
 // ── Semantic objects ──────────────────────────────────────────
+// Curated palette per COCO label (people = red, furniture = green, etc.).
+// Anything not listed falls through to a stable hash-based hue.
+const LABEL_COLORS = {
+  person: 0xef5350, child: 0xef5350,
+  bicycle: 0xffb300, motorcycle: 0xffb300, car: 0x42a5f5, bus: 0x42a5f5,
+  truck: 0x42a5f5, train: 0x42a5f5, boat: 0x29b6f6, airplane: 0x29b6f6,
+  'traffic light': 0xfdd835, 'stop sign': 0xe53935, 'fire hydrant': 0xe53935,
+  bench: 0x8d6e63, chair: 0x66bb6a, couch: 0x66bb6a, bed: 0x66bb6a,
+  'dining table': 0xa1887f, 'potted plant': 0x7cb342, toilet: 0xb0bec5,
+  tv: 0xab47bc, laptop: 0xab47bc, 'cell phone': 0xab47bc, mouse: 0xb39ddb,
+  keyboard: 0xb39ddb, remote: 0xb39ddb, book: 0xff8a65, clock: 0xffd54f,
+  vase: 0xff80ab, scissors: 0x90a4ae,
+  bird: 0x80cbc4, cat: 0xffb74d, dog: 0xffb74d, horse: 0xa1887f,
+  sheep: 0xeeeeee, cow: 0xbcaaa4, bear: 0x6d4c41, zebra: 0xeeeeee, giraffe: 0xffe082,
+  bottle: 0x4dd0e1, 'wine glass': 0xb39ddb, cup: 0x4dd0e1, fork: 0x90a4ae,
+  knife: 0x90a4ae, spoon: 0x90a4ae, bowl: 0xffcc80,
+  banana: 0xfff176, apple: 0xef5350, sandwich: 0xffd54f, orange: 0xffa726,
+  broccoli: 0x7cb342, carrot: 0xff7043, 'hot dog': 0xff8a65, pizza: 0xff7043,
+  donut: 0xffd54f, cake: 0xf06292,
+  backpack: 0x7986cb, umbrella: 0x9575cd, handbag: 0xba68c8, tie: 0x5c6bc0,
+  suitcase: 0x8d6e63, 'teddy bear': 0xff8a65,
+  refrigerator: 0xb0bec5, microwave: 0xb0bec5, oven: 0xb0bec5,
+  toaster: 0xb0bec5, sink: 0xb0bec5,
+};
+function _hashHue(s) {
+  let h = 0; for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return ((h % 360) + 360) % 360;
+}
+function colorForLabel(label) {
+  const key = (label || '').toLowerCase();
+  if (LABEL_COLORS[key] !== undefined) return new THREE.Color(LABEL_COLORS[key]);
+  return new THREE.Color().setHSL(_hashHue(key) / 360, 0.65, 0.55);
+}
+
 const objPool = [];
-const oGeo = new THREE.SphereGeometry(0.12, 8, 6);
-const C_HI = new THREE.Color(0x66bb6a);
-const C_LO = new THREE.Color(0xef9a9a);
+const oGeo = new THREE.SphereGeometry(0.07, 12, 10);  // smaller as requested
 
 for (let i = 0; i < 80; i++) {
+  const grp = new THREE.Group();
   const m = new THREE.Mesh(
     oGeo,
-    new THREE.MeshStandardMaterial({ roughness: 0.4 })
+    new THREE.MeshStandardMaterial({ roughness: 0.4, emissiveIntensity: 0.55 })
   );
-  m.visible = false;
-  scene.add(m);
-  objPool.push(m);
+  grp.add(m);
+
+  const div = document.createElement('div');
+  div.className = 'obj-label';
+  div.style.display = 'none';
+  const lbl = new CSS2DObject(div);
+  lbl.position.set(0, 0.12, 0);   // float just above the sphere
+  grp.add(lbl);
+
+  grp.visible = false;
+  scene.add(grp);
+  objPool.push({ grp, mesh: m, label: lbl, div });
 }
 
 function updateObjects(objs) {
@@ -1273,15 +1335,22 @@ function updateObjects(objs) {
     return o.pose && o.label !== 'robot_position' && o.label.indexOf('nav_goal') !== 0;
   });
   for (let i = 0; i < objPool.length; i++) {
+    const slot = objPool[i];
     if (i < disp.length) {
       const o = disp[i];
-      objPool[i].position.set(o.pose.x, 0.15, -o.pose.y);
-      const col = (o.confidence || 0) > 0.7 ? C_HI : C_LO;
-      objPool[i].material.color.copy(col);
-      objPool[i].material.emissive.copy(col).multiplyScalar(0.15);
-      objPool[i].visible = true;
+      slot.grp.position.set(o.pose.x, 0.20, -o.pose.y);
+      const col = colorForLabel(o.label);
+      slot.mesh.material.color.copy(col);
+      slot.mesh.material.emissive.copy(col).multiplyScalar(0.45);
+      const conf = ((o.confidence || 0) * 100).toFixed(0);
+      slot.div.textContent = o.label + ' · ' + conf + '%';
+      slot.div.style.display = '';
+      slot.div.style.borderColor =
+        '#' + col.clone().multiplyScalar(0.85).getHexString();
+      slot.grp.visible = true;
     } else {
-      objPool[i].visible = false;
+      slot.grp.visible = false;
+      slot.div.style.display = 'none';
     }
   }
   const tbody = document.getElementById('obj-body');
@@ -1508,6 +1577,7 @@ function _fitRendererToPanel() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h, false);
+  labelRenderer.setSize(w, h);
 }
 window.addEventListener('resize', _fitRendererToPanel);
 new ResizeObserver(_fitRendererToPanel).observe(panel);
@@ -1531,6 +1601,7 @@ new ResizeObserver(_fitRendererToPanel).observe(panel);
   }
 
   renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
 })();
 </script>
 

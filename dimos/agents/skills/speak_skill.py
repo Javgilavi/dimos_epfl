@@ -38,6 +38,13 @@ class SpeakSkill(Module):
     @rpc
     def start(self) -> None:
         super().start()
+        # TTS is optional — skip it if no OpenAI key is configured.
+        # Without this guard the whole agentic blueprint fails to start.
+        import os as _os
+        if not _os.environ.get("OPENAI_API_KEY"):
+            self._tts_node = None
+            self._audio_output = None
+            return
         self._tts_node = OpenAITTSNode(speed=1.2, voice=Voice.ONYX)
         self._audio_output = SounddeviceAudioOutput(sample_rate=24000)
         self._audio_output.consume_audio(self._tts_node.emit_audio())
