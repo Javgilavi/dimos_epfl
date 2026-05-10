@@ -50,6 +50,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_BRIDGE_PW = os.environ.get("BRIDGE_PASSWORD", "")
+
+
+def _bridge_headers(extra: dict | None = None) -> dict:
+    h = dict(extra or {})
+    if _BRIDGE_PW:
+        h["X-Bridge-Password"] = _BRIDGE_PW
+    return h
+
 
 # ── Robot State Tracker ───────────────────────────────────────
 
@@ -284,6 +293,7 @@ def push_to_cloud(cloud_url: str, robot_id: str, objects: list[dict]) -> bool:
         resp = httpx.post(
             f"{cloud_url}/ingest",
             json={"robot_id": robot_id, "objects": objects},
+            headers=_bridge_headers(),
             timeout=2.0,
         )
         return resp.status_code == 200
@@ -307,7 +317,8 @@ def push_map_to_cloud(
     if robot_pose is not None:
         payload["robot_pose"] = robot_pose
     try:
-        resp = httpx.post(f"{cloud_url}/ingest/map", json=payload, timeout=2.0)
+        resp = httpx.post(f"{cloud_url}/ingest/map", json=payload,
+                          headers=_bridge_headers(), timeout=2.0)
         return resp.status_code == 200
     except (httpx.ConnectError, httpx.TimeoutException):
         return False
@@ -366,7 +377,7 @@ def push_frame_to_cloud(cloud_url: str, robot_id: str, data: Any) -> bool:
         resp = httpx.post(
             f"{cloud_url}/frames",
             content=frame_bytes,
-            headers={"Content-Type": "image/jpeg", "X-Robot-Id": robot_id},
+            headers=_bridge_headers({"Content-Type": "image/jpeg", "X-Robot-Id": robot_id}),
             timeout=1.0,
         )
         return resp.status_code == 200
@@ -476,10 +487,10 @@ async def stream_camera_from_shm(cloud_url: str, robot_id: str, topic: str = "co
                                 httpx.post(
                                     f"{cloud_url}/frames",
                                     content=frame_bytes,
-                                    headers={
+                                    headers=_bridge_headers({
                                         "Content-Type": "image/jpeg",
                                         "X-Robot-Id": robot_id,
-                                    },
+                                    }),
                                     timeout=1.0,
                                 )
                             except (httpx.ConnectError, httpx.TimeoutException):
@@ -500,7 +511,8 @@ async def poll_goals(cloud_url: str, ws_url: str):
     """Poll EC2 for queued navigation goals and forward them to DimOS."""
     while True:
         try:
-            resp = httpx.get(f"{cloud_url}/goals/pending", timeout=2.0)
+            resp = httpx.get(f"{cloud_url}/goals/pending",
+                             headers=_bridge_headers(), timeout=2.0)
             if resp.status_code == 200:
                 for goal in resp.json().get("goals", []):
                     logger.info(f"Forwarding goal from cloud: ({goal['x']:.2f}, {goal['y']:.2f})")

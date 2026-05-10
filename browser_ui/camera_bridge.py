@@ -43,16 +43,20 @@ DEFAULT_HTTP     = os.environ.get("CAMERA_HTTP_URL", "http://192.168.123.18:8888
 DEFAULT_RTSP     = "rtsp://192.168.123.161:8554/video"
 JPEG_QUALITY     = 72
 LCM_CHANNEL      = "/color_image#sensor_msgs.Image"
+_BRIDGE_PW       = os.environ.get("BRIDGE_PASSWORD", "")
 
 
 # ── Shared helpers ────────────────────────────────────────────
 
 def push_frame(cloud_url: str, robot_id: str, jpeg_bytes: bytes) -> bool:
+    headers = {"Content-Type": "image/jpeg", "X-Robot-Id": robot_id}
+    if _BRIDGE_PW:
+        headers["X-Bridge-Password"] = _BRIDGE_PW
     try:
         r = httpx.post(
             f"{cloud_url}/frames",
             content=jpeg_bytes,
-            headers={"Content-Type": "image/jpeg", "X-Robot-Id": robot_id},
+            headers=headers,
             timeout=1.0,
         )
         return r.status_code == 200

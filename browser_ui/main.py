@@ -19,9 +19,16 @@ import zlib
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, Response
 
+from auth import (
+    DASHBOARD_PASSWORD,
+    create_session,
+    verify_bridge,
+    verify_dashboard_password,
+    verify_session,
+)
 from models import (
     IngestRequest, IngestResponse,
     QueryRequest, MapResponse,
@@ -199,10 +206,30 @@ async def health():
     return {"status": "ok", "store": "memory" if USE_MEMORY_STORE else "s3"}
 
 
+# ── Auth ──────────────────────────────────────────────────────
+
+@app.post("/auth/login")
+async def login(request: Request):
+    """Browser login — returns a session token on success.
+
+    If DASHBOARD_PASSWORD is not set the server is open and returns
+    {"token": "open", "auth": false} so the client skips the login screen.
+    """
+    if not DASHBOARD_PASSWORD:
+        return {"token": "open", "auth": False}
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Expected JSON body with 'password' key")
+    verify_dashboard_password(body.get("password", ""))
+    token = create_session()
+    return {"token": token, "auth": True}
+
+
 # ── Speech-to-text (AWS Transcribe) ───────────────────────────
 
 @app.post("/speech/transcribe")
-async def transcribe_speech(request: Request):
+async def transcribe_speech(request: Request, _tok: str = Depends(verify_session)):
     """Transcribe a short browser-recorded audio clip via Amazon Transcribe.
 
     The browser posts the audio blob directly. We upload it to S3 because
@@ -279,7 +306,7 @@ async def transcribe_speech(request: Request):
 # ── Robot Endpoints (Req 1: Ingestion) ────────────────────────
 
 @app.post("/ingest", response_model=IngestResponse)
-async def ingest(request: IngestRequest):
+async def ingest(request: IngestRequest, _: None = Depends(verify_bridge)):
     store: WorldStateStore = app.state.world_store
     previous = store.load(request.robot_id)
     objects = _merge_detected_objects(previous.objects if previous else [], request.objects)
@@ -355,7 +382,7 @@ def _stream_mcp_response(text: str, mode: str) -> StreamingResponse:
 
 
 @app.post("/query/stream")
-async def query_stream(request: QueryRequest):
+async def query_stream(request: QueryRequest, _tok: str = Depends(verify_session)):
     """🧠 Ask mode — read-only Q&A over the dimos MCP.
 
     The agent has the full set of dimos read-only tools (observe, server_status,
@@ -394,7 +421,7 @@ async def query_stream(request: QueryRequest):
 
 
 @app.post("/command/stream")
-async def command_stream(request: QueryRequest):
+async def command_stream(request: QueryRequest, _tok: str = Depends(verify_session)):
     """🤖 Agent mode — full tool access. Can move the robot, explore, etc."""
     use_mcp = os.environ.get("USE_MCP_AGENT", "true").lower() == "true"
     if use_mcp:
@@ -414,7 +441,7 @@ _latest_frames: dict[str, bytes] = {}
 
 
 @app.post("/frames")
-async def receive_frame(request: Request):
+async def receive_frame(request: Request, _: None = Depends(verify_bridge)):
     robot_id = request.headers.get("X-Robot-Id", "go2_a")
     body = await request.body()
     if not body:
@@ -424,7 +451,7 @@ async def receive_frame(request: Request):
 
 
 @app.get("/frames/{robot_id}")
-async def get_frame(robot_id: str):
+async def get_frame(robot_id: str, _tok: str = Depends(verify_session)):
     frame = _latest_frames.get(robot_id)
     if frame is None:
         raise HTTPException(404, "No frame available")
@@ -432,7 +459,7 @@ async def get_frame(robot_id: str):
 
 
 @app.get("/frames/{robot_id}/stream")
-async def stream_frames(robot_id: str):
+async def stream_frames(robot_id: str, _tok: str = Depends(verify_session)):
     import asyncio
     async def generate():
         while True:
@@ -581,7 +608,7 @@ def _update_accumulated_voxels(
 
 
 @app.post("/ingest/pointcloud")
-async def ingest_pointcloud(request: Request):
+async def ingest_pointcloud(request: Request, _: None = Depends(verify_bridge)):
     robot_id = request.headers.get("X-Robot-Id", "go2_a")
     body = await request.body()
     if not body:
@@ -601,7 +628,7 @@ async def ingest_pointcloud(request: Request):
 
 
 @app.get("/pointcloud/live")
-async def get_live_pointcloud():
+async def get_live_pointcloud(_tok: str = Depends(verify_session)):
     return _live_pc
 
 
@@ -612,7 +639,7 @@ _live_pose: dict[str, dict] = {}
 
 
 @app.post("/ingest/pose")
-async def ingest_pose(request: Request):
+async def ingest_pose(request: Request, _: None = Depends(verify_bridge)):
     robot_id = request.headers.get("X-Robot-Id", "go2_a")
     try:
         data = await request.json()
@@ -626,7 +653,7 @@ async def ingest_pose(request: Request):
 
 
 @app.get("/pose/live")
-async def get_live_pose():
+async def get_live_pose(_tok: str = Depends(verify_session)):
     return _live_pose
 
 
@@ -636,14 +663,14 @@ _goal_queue: list[dict] = []
 
 
 @app.post("/navigate")
-async def navigate_to_point(x: float, y: float, z: float = 0.0):
+async def navigate_to_point(x: float, y: float, z: float = 0.0, _tok: str = Depends(verify_session)):
     """Queue a navigation goal — nav_bridge forwards it to DimOS over LCM."""
     _goal_queue.append({"x": x, "y": y, "z": z, "ts": time.time()})
     return {"status": "queued", "target": {"x": x, "y": y, "z": z}}
 
 
 @app.get("/goals/pending")
-async def get_pending_goals():
+async def get_pending_goals(_: None = Depends(verify_bridge)):
     goals = list(_goal_queue)
     _goal_queue.clear()
     return {"goals": goals}
@@ -652,7 +679,7 @@ async def get_pending_goals():
 # ── Map Endpoint ──────────────────────────────────────────────
 
 @app.get("/map", response_model=MapResponse)
-async def get_map():
+async def get_map(_tok: str = Depends(verify_session)):
     store: WorldStateStore = app.state.world_store
     states = store.load_all()
     merged = store.merge()
@@ -663,7 +690,10 @@ async def get_map():
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    return DASHBOARD_HTML
+    return DASHBOARD_HTML.replace(
+        "_AUTH_PLACEHOLDER_",
+        "true" if DASHBOARD_PASSWORD else "false",
+    )
 
 
 # ── Dashboard HTML ────────────────────────────────────────────
@@ -817,6 +847,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
     /* Wrapper for the CSS2DRenderer DOM layer — must overlay the canvas exactly */
     #label-layer { position: absolute; inset: 0; pointer-events: none; }
+
+    /* Login overlay */
+    #login-overlay { display:none; position:fixed; inset:0;
+      background:rgba(0,0,0,0.88); z-index:9999;
+      align-items:center; justify-content:center; }
+    #login-overlay.show { display:flex; }
+    #login-box { background:#0d1117; border:1px solid #1e2d3d; border-radius:12px;
+      padding:36px 40px; min-width:300px; text-align:center; }
+    #login-box h2 { font-size:18px; color:#4fc3f7; margin-bottom:4px; font-weight:700; }
+    #login-box p  { font-size:11px; color:#556; margin-bottom:20px; }
+    #pw-inp { width:100%; padding:9px 12px; background:#080c10;
+      border:1px solid #2a3a4a; border-radius:6px; color:#eee;
+      font-size:14px; margin-bottom:10px; }
+    #pw-inp:focus { outline:none; border-color:#4fc3f7; }
+    #login-submit { width:100%; padding:9px; background:#1565c0; border:none;
+      border-radius:6px; color:#fff; font-size:14px; cursor:pointer;
+      font-weight:600; margin-bottom:8px; }
+    #login-submit:hover { background:#1976d2; }
+    #login-err { color:#ef9a9a; font-size:12px; min-height:16px; }
   </style>
 </head>
 <body>
@@ -856,8 +905,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div id="bottom-panel">
       <div id="cam-section">
         <div class="section-title">Camera</div>
-        <img id="cam-img" src="/frames/go2_a/stream"
-             onerror="this.style.opacity='0.12'" alt="">
+        <img id="cam-img" onerror="this.style.opacity='0.12'" alt="">
       </div>
       <div id="obj-section">
         <div class="section-title">Objects in semantic memory</div>
@@ -872,7 +920,86 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
+<div id="login-overlay">
+  <div id="login-box">
+    <h2>SpatialMind</h2>
+    <p>Go2 · 3D Live</p>
+    <input id="pw-inp" type="password" placeholder="Password"
+           onkeydown="if(event.key==='Enter')window._login()">
+    <button id="login-submit" onclick="window._login()">Connect</button>
+    <div id="login-err"></div>
+  </div>
+</div>
+
 <script>
+/* Auth ─────────────────────────────────────────────────────── */
+const _AUTH_REQUIRED = _AUTH_PLACEHOLDER_;
+let _sessionToken = sessionStorage.getItem('sm_token') || '';
+
+function _showLogin(msg) {
+  const ov = document.getElementById('login-overlay');
+  ov.classList.add('show');
+  if (msg) document.getElementById('login-err').textContent = msg;
+}
+function _hideLogin() {
+  document.getElementById('login-overlay').classList.remove('show');
+  document.getElementById('login-err').textContent = '';
+  _initCamStream();
+}
+function _initCamStream() {
+  const img = document.getElementById('cam-img');
+  img.src = _AUTH_REQUIRED && _sessionToken
+    ? '/frames/go2_a/stream?token=' + encodeURIComponent(_sessionToken)
+    : '/frames/go2_a/stream';
+}
+window._login = async function() {
+  const pw = document.getElementById('pw-inp').value;
+  document.getElementById('login-err').textContent = '';
+  try {
+    const r = await fetch('/auth/login', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pw})
+    });
+    if (r.ok) {
+      const d = await r.json();
+      _sessionToken = d.token;
+      sessionStorage.setItem('sm_token', _sessionToken);
+      _hideLogin();
+    } else if (r.status === 429) {
+      document.getElementById('login-err').textContent =
+        'Server full — max viewers reached. Try again later.';
+    } else {
+      document.getElementById('login-err').textContent = 'Wrong password';
+    }
+  } catch(e) {
+    document.getElementById('login-err').textContent = 'Connection error: ' + e.message;
+  }
+};
+/* _apiFetch — wraps fetch() to add session token and handle 401 */
+function _apiFetch(url, opts) {
+  opts = opts || {};
+  if (_AUTH_REQUIRED && _sessionToken) {
+    opts.headers = Object.assign({}, opts.headers || {}, {'X-Session-Token': _sessionToken});
+  }
+  return fetch(url, opts).then(function(r) {
+    if (r.status === 401) {
+      _sessionToken = ''; sessionStorage.removeItem('sm_token');
+      _showLogin('Session expired — please log in again.');
+    }
+    return r;
+  });
+}
+/* On page load: skip login if auth disabled or token already valid */
+(async function() {
+  if (!_AUTH_REQUIRED) { _initCamStream(); return; }
+  if (_sessionToken) {
+    const r = await fetch('/map', {headers: {'X-Session-Token': _sessionToken}}).catch(()=>null);
+    if (r && r.ok) { _hideLogin(); return; }
+    _sessionToken = ''; sessionStorage.removeItem('sm_token');
+  }
+  _showLogin();
+})();
+
 /* Chat — two tabs (Ask 🧠 / Agent 🤖) with fully isolated histories */
 let _mode = 'ask';
 
@@ -927,7 +1054,7 @@ window._chat = async function() {
     flushText();
   }
   try {
-    const resp = await fetch(endpoint, {
+    const resp = await _apiFetch(endpoint, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({text: q})
     });
@@ -1003,7 +1130,7 @@ window._mic = (function() {
     btn.disabled = true;
     try {
       const blob = new Blob(chunks, {type: (recorder && recorder.mimeType) || 'audio/webm'});
-      const resp = await fetch('/speech/transcribe', {
+      const resp = await _apiFetch('/speech/transcribe', {
         method: 'POST',
         headers: {'Content-Type': blob.type || 'audio/webm'},
         body: blob
@@ -1434,7 +1561,7 @@ renderer.domElement.addEventListener('pointerup', async function(e) {
   const wx = navPt.x, wy = -navPt.z;
   _showNav('Sending (' + wx.toFixed(2) + ', ' + wy.toFixed(2) + ')...');
   try {
-    const res = await fetch('/navigate?x=' + wx.toFixed(3) + '&y=' + wy.toFixed(3), {method: 'POST'});
+    const res = await _apiFetch('/navigate?x=' + wx.toFixed(3) + '&y=' + wy.toFixed(3), {method: 'POST'});
     const d = await res.json();
     _showNav(res.ok
       ? 'Goal sent (' + wx.toFixed(2) + ', ' + wy.toFixed(2) + ')'
@@ -1539,7 +1666,7 @@ let _lastPoseTs = 0;
 
 async function pollPose() {
   try {
-    const d = await (await fetch('/pose/live')).json();
+    const d = await (await _apiFetch('/pose/live')).json();
     const entry = d['go2_a'] || Object.values(d)[0];
     if (entry && entry.ts !== _lastPoseTs) {
       _lastPoseTs = entry.ts;
@@ -1551,14 +1678,14 @@ async function pollPose() {
 
 async function pollSem() {
   try {
-    const d = await (await fetch('/map')).json();
+    const d = await (await _apiFetch('/map')).json();
     updateObjects(d.objects || []);
   } catch(e) {}
 }
 
 async function pollPointcloud() {
   try {
-    const d = await (await fetch('/pointcloud/live')).json();
+    const d = await (await _apiFetch('/pointcloud/live')).json();
     const entry = d['go2_a'] || Object.values(d)[0];
     if (entry) updateLidar(entry);
   } catch(e) {}

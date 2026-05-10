@@ -37,17 +37,21 @@ DEFAULT_CLOUD = os.environ.get("CLOUD_URL", "http://localhost:8080")
 DEFAULT_ROBOT_ID = os.environ.get("ROBOT_ID", "go2_a")
 DEFAULT_FPS = int(os.environ.get("PC_BRIDGE_FPS", "4"))
 MAX_POINTS = int(os.environ.get("PC_BRIDGE_MAX_POINTS", "20000"))
+_BRIDGE_PW = os.environ.get("BRIDGE_PASSWORD", "")
 
 
 def _push(cloud_url: str, robot_id: str, payload: bytes) -> bool:
+    headers = {
+        "Content-Type": "application/octet-stream",
+        "X-Robot-Id": robot_id,
+    }
+    if _BRIDGE_PW:
+        headers["X-Bridge-Password"] = _BRIDGE_PW
     try:
         r = requests.post(
             f"{cloud_url}/ingest/pointcloud",
             data=payload,
-            headers={
-                "Content-Type": "application/octet-stream",
-                "X-Robot-Id": robot_id,
-            },
+            headers=headers,
             timeout=2.0,
         )
         return r.ok

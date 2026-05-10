@@ -36,16 +36,24 @@ DEFAULT_CLOUD = os.environ.get("CLOUD_URL", "http://localhost:8080")
 DEFAULT_ROBOT_ID = os.environ.get("ROBOT_ID", "go2_a")
 DEFAULT_POSE_HZ = float(os.environ.get("NAV_POSE_HZ", "15"))
 DEFAULT_GOAL_POLL_HZ = float(os.environ.get("NAV_GOAL_POLL_HZ", "5"))
+_BRIDGE_PW = os.environ.get("BRIDGE_PASSWORD", "")
 
 
 # ── Pose subscriber → cloud push ─────────────────────────────
+
+def _bridge_headers(extra: dict | None = None) -> dict:
+    h = dict(extra or {})
+    if _BRIDGE_PW:
+        h["X-Bridge-Password"] = _BRIDGE_PW
+    return h
+
 
 def _push_pose(cloud_url: str, robot_id: str, pose_dict: dict) -> bool:
     try:
         r = requests.post(
             f"{cloud_url}/ingest/pose",
             json=pose_dict,
-            headers={"X-Robot-Id": robot_id},
+            headers=_bridge_headers({"X-Robot-Id": robot_id}),
             timeout=1.5,
         )
         return r.ok
@@ -118,7 +126,8 @@ def run_goal_poller(cloud_url: str, robot_id: str, hz: float, lc):
     while True:
         time.sleep(interval)
         try:
-            r = requests.get(f"{cloud_url}/goals/pending", timeout=1.5)
+            r = requests.get(f"{cloud_url}/goals/pending",
+                             headers=_bridge_headers(), timeout=1.5)
             if not r.ok:
                 continue
             data = r.json()
