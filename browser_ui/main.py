@@ -36,7 +36,7 @@ from models import (
     ErrorResponse, WorldState,
 )
 from world_store import WorldStateStore
-import mcp_proxy
+import mcp_proxy_queue
 
 logger = logging.getLogger(__name__)
 
@@ -247,8 +247,18 @@ async def bridge_mcp_pending(_: None = Depends(verify_bridge), timeout: float = 
     call a DimOS MCP tool. The laptop-side mcp_proxy_bridge.py forwards the
     payload to local http://localhost:9990/mcp and posts the result back.
     """
-    item = await asyncio.to_thread(mcp_proxy.get_pending, min(max(timeout, 0.1), 30.0))
+    item = await asyncio.to_thread(mcp_proxy_queue.get_pending, min(max(timeout, 0.1), 30.0))
     return item or {"id": None}
+
+
+@app.get("/bridge/mcp/status")
+async def bridge_mcp_status(_: None = Depends(verify_bridge)):
+    return {
+        "status": "ok",
+        "module": getattr(mcp_proxy_queue, "__file__", "unknown"),
+        "has_get_pending": hasattr(mcp_proxy_queue, "get_pending"),
+        "has_submit": hasattr(mcp_proxy_queue, "submit"),
+    }
 
 
 @app.post("/bridge/mcp/response")
@@ -260,7 +270,7 @@ async def bridge_mcp_response(request: Request, _: None = Depends(verify_bridge)
     response = body.get("response")
     if not isinstance(response, dict):
         raise HTTPException(400, "missing response")
-    mcp_proxy.put_response(req_id, response)
+    mcp_proxy_queue.put_response(req_id, response)
     return {"status": "ok"}
 
 

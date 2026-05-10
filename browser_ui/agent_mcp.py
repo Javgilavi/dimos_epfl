@@ -171,9 +171,9 @@ class MCPClient:
         self._use_bridge = MCP_TRANSPORT == "bridge"
 
     def _bridge_rpc(self, body: dict) -> dict:
-        import mcp_proxy
+        import mcp_proxy_queue
 
-        data = mcp_proxy.submit(body, timeout=self.timeout + 10.0)
+        data = mcp_proxy_queue.submit(body, timeout=self.timeout + 10.0)
         if "error" in data:
             raise RuntimeError(f"MCP bridge error: {data['error']}")
         return data.get("result", {})
