@@ -19,6 +19,7 @@ Usage:
     python camera_bridge.py --http-url http://192.168.123.18:8888/frame
     python camera_bridge.py --cloud-url http://<ec2>:8080
 """
+from __future__ import annotations
 
 import argparse
 import logging

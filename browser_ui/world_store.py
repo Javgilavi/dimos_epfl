@@ -12,8 +12,11 @@ Usage:
     # Development (no AWS needed)
     store = WorldStateStore(bucket="test", use_memory=True)
 """
+from __future__ import annotations
 
 import json
+import math
+import os
 import time
 import logging
 from typing import Protocol
@@ -132,9 +135,32 @@ class WorldStateStore:
         return states
 
     def merge(self) -> list[DetectedObject]:
-        """Merge all robots' detected objects into a single list."""
+        """Merge all robots' world states and apply DynaMem-style temporal decay.
+
+        Confidence decays exponentially with time since last_seen.  Objects
+        whose effective confidence falls below the minimum threshold are dropped
+        so the LLM never reasons over stale detections as if they were current.
+
+        Tunables (env vars):
+          OBJECT_DECAY_RATE   — fraction of confidence lost per second (default 0.0002).
+                                At the default, a detection loses ~50% confidence
+                                after ~57 minutes and is dropped after ~2 hours.
+          OBJECT_MIN_CONFIDENCE — drop objects below this effective confidence
+                                  (default 0.10).
+        """
+        decay_rate   = float(os.environ.get("OBJECT_DECAY_RATE",      "0.0002"))
+        min_conf     = float(os.environ.get("OBJECT_MIN_CONFIDENCE",  "0.10"))
+        now = time.time()
+
         states = self.load_all()
-        merged: list[DetectedObject] = []
+        result: list[DetectedObject] = []
         for state in states:
-            merged.extend(state.objects)
-        return merged
+            for obj in state.objects:
+                age_s = max(0.0, now - obj.last_seen)
+                effective_conf = obj.confidence * math.exp(-decay_rate * age_s)
+                if effective_conf < min_conf:
+                    continue
+                obj_copy = obj.model_copy(deep=True)
+                obj_copy.confidence = round(effective_conf, 4)
+                result.append(obj_copy)
+        return result

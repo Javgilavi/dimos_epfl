@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 # ── Configuration ─────────────────────────────────────────────
 
 AWS_REGION = os.environ.get("AWS_REGION", "eu-west-1")
-MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "eu.anthropic.claude-sonnet-4-6")
-MAX_TOKENS = int(os.environ.get("BEDROCK_MAX_TOKENS", "500"))
+MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "eu.anthropic.claude-opus-4-6")
+MAX_TOKENS = int(os.environ.get("BEDROCK_MAX_TOKENS", "2048"))
 USE_BEDROCK = os.environ.get("USE_BEDROCK", "false").lower() == "true"
 
 # ── Tools Definition ──────────────────────────────────────────

@@ -18,6 +18,7 @@ Usage:
     # Custom ports:
     python ws_bridge.py --ws-url http://localhost:7779 --cloud-url http://localhost:8080
 """
+from __future__ import annotations
 
 import argparse
 import asyncio

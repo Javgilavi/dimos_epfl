@@ -18,6 +18,7 @@ Usage:
     # Just list what tools DimOS has (no pushing):
     python dimos_bridge.py --list-tools
 """
+from __future__ import annotations
 
 import argparse
 import json

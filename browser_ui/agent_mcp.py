@@ -30,10 +30,27 @@ logger = logging.getLogger(__name__)
 
 MCP_URL = os.environ.get("DIMOS_MCP_URL", "http://localhost:9990/mcp")
 AWS_REGION = os.environ.get("AWS_REGION", "us-west-2")
-BEDROCK_MODEL_ID = os.environ.get(
-    "BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6"
+
+# Per-mode model selection.
+# Agent needs deep multi-step reasoning over 22+ tools → Opus 4.7 (best for
+# long-running autonomous agents as of May 2026).
+# Ask is read-only Q&A with spatial data → Opus 4.6 (enhanced domain awareness,
+# lower cost than 4.7, sufficient for perceptual inference).
+BEDROCK_MODEL_ID_AGENT = os.environ.get(
+    "BEDROCK_MODEL_ID_AGENT", "us.anthropic.claude-opus-4-7"
 )
-MAX_TOKENS = int(os.environ.get("BEDROCK_MAX_TOKENS", "1024"))
+BEDROCK_MODEL_ID_ASK = os.environ.get(
+    "BEDROCK_MODEL_ID_ASK", "us.anthropic.claude-opus-4-6"
+)
+# Backward-compat: if BEDROCK_MODEL_ID is set explicitly it overrides both.
+BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "")
+
+# Token budgets: Agent needs room for multi-hop tool chains; Ask is Q&A only.
+MAX_TOKENS_AGENT = int(os.environ.get("BEDROCK_MAX_TOKENS_AGENT", "4096"))
+MAX_TOKENS_ASK   = int(os.environ.get("BEDROCK_MAX_TOKENS_ASK",   "2048"))
+# Legacy single-value env-var still respected.
+MAX_TOKENS = int(os.environ.get("BEDROCK_MAX_TOKENS", "0")) or None
+
 MCP_TIMEOUT = float(os.environ.get("DIMOS_MCP_TIMEOUT", "60"))
 
 # Tools that physically move the robot or modify persistent state.
@@ -62,9 +79,27 @@ ASK_BLOCKED_TOOLS = {
     "agent_send",            # could route arbitrary commands to other modules
 }
 
-# Agent mode intentionally has no system instructions. It receives the full
-# DimOS MCP tool list and lets the MCP server/tool descriptions define behavior.
-AGENT_SYSTEM_PROMPT: list[dict] = []
+# Agent mode — explicit persona and safety guardrails so Opus 4.7 doesn't guess
+# at intent when navigating among 22+ tools in a dynamic EPFL environment.
+AGENT_SYSTEM_PROMPT: list[dict] = [{
+    "text": (
+        "You are the autonomous command brain of a Unitree Go2 robot dog at "
+        "EPFL RoboHack 2026, powered by DimOS. You have full access to the "
+        "dimos MCP server: navigation, exploration, patrol, object search, "
+        "semantic map, spatial memory, robot pose, camera, and more.\n\n"
+        "Operational rules:\n"
+        "- Prefer navigate_with_text for natural-language destinations.\n"
+        "- Use begin_exploration only when the map is empty or explicitly "
+        "requested — it is expensive.\n"
+        "- If an object is not in the semantic map, suggest exploring first "
+        "or using look_out_for.\n"
+        "- When YOLO11 confidence is below 70%, state the uncertainty in your "
+        "reply (the Jetson camera may need a clearer view).\n"
+        "- Confirm before irreversible or long-running actions "
+        "(navigate, patrol, follow); be concise — one sentence is enough.\n"
+        "- Replies render in a small chat bubble: keep them short."
+    )
+}]
 
 ASK_SYSTEM_PROMPT = [{
     "text": (
@@ -231,21 +266,37 @@ def _bedrock_stream_with_mcp(
     mcp: MCPClient,
     bedrock_tools: list[dict],
     system_prompt: list[dict] | None = None,
+    model_id: str | None = None,
+    max_tokens: int | None = None,
+    vision_blocks: list[dict] | None = None,
 ) -> Generator[str, None, None]:
     """Multi-turn loop: ask the model → stream tokens → if it requested a
-    tool_use, call MCP, append result, loop until the model stops."""
+    tool_use, call MCP, append result, loop until the model stops.
+
+    Args:
+        vision_blocks: optional Bedrock content blocks (image/text) prepended
+            to the initial user message.  Used to give the model visual context
+            for low-confidence Jetson YOLO11 detections.
+    """
     import boto3
 
     bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
-    messages: list[dict] = [{"role": "user", "content": [{"text": user_message}]}]
+
+    effective_model = BEDROCK_MODEL_ID or model_id or BEDROCK_MODEL_ID_AGENT
+    effective_max_tokens = MAX_TOKENS or max_tokens or MAX_TOKENS_AGENT
+
+    # Build initial user message, prepending vision blocks when present.
+    initial_content: list[dict] = list(vision_blocks) if vision_blocks else []
+    initial_content.append({"text": user_message})
+    messages: list[dict] = [{"role": "user", "content": initial_content}]
     sys_prompt = system_prompt if system_prompt is not None else AGENT_SYSTEM_PROMPT
 
     max_iterations = 8  # safety guard against runaway tool loops
     for _ in range(max_iterations):
         request = {
-            "modelId": BEDROCK_MODEL_ID,
+            "modelId": effective_model,
             "messages": messages,
-            "inferenceConfig": {"maxTokens": MAX_TOKENS},
+            "inferenceConfig": {"maxTokens": effective_max_tokens},
         }
         if sys_prompt:
             request["system"] = sys_prompt
@@ -368,7 +419,7 @@ def _cloud_get(path: str, timeout: float = 3.0) -> dict | list | None:
 
 
 def _cloud_tool_get_semantic_map(args: dict) -> str:
-    """All cumulative objects detected by the robot, with positions + confidence."""
+    """All cumulative objects detected by the Jetson YOLO11, with enriched context."""
     data = _cloud_get("/map") or {}
     if isinstance(data, dict) and data.get("_error"):
         return f"(could not reach cloud /map: {data['_error']})"
@@ -376,14 +427,26 @@ def _cloud_tool_get_semantic_map(args: dict) -> str:
     if not objs:
         return ("Semantic map is empty — no objects detected yet. "
                 "If you want detections, switch to Agent and ask it to explore.")
-    lines = [f"Semantic map ({len(objs)} object(s)):"]
+    lines = [f"Semantic map ({len(objs)} object(s) from Jetson YOLO11):"]
     for o in sorted(objs, key=lambda x: -(x.get('confidence') or 0))[:30]:
+        conf = (o.get('confidence') or 0) * 100
+        conf_note = " ⚠LOW" if conf < 70 else ""
+        cat = o.get('category', 'object')
+        tags = o.get('semantic_tags') or []
+        tag_str = f" [{', '.join(tags[:3])}]" if tags else ""
+        pose = o.get('pose') or {}
+        relations = o.get('spatial_relations') or []
+        rel_str = f"  | {', '.join(relations[:3])}" if relations else ""
+        flags = []
+        if o.get('is_dynamic'):       flags.append("moving")
+        if o.get('is_blocking_path'): flags.append("blocks-path")
+        if o.get('is_fragile'):       flags.append("fragile")
+        flag_str = f"  [{', '.join(flags)}]" if flags else ""
         lines.append(
-            f"  - {o.get('label')}: "
-            f"({(o.get('pose') or {}).get('x', 0):.2f}, "
-            f"{(o.get('pose') or {}).get('y', 0):.2f}) m  "
-            f"conf {(o.get('confidence') or 0)*100:.0f}%  "
-            f"seen {o.get('seen_count', 1)}×"
+            f"  - {o.get('label')} ({cat}{tag_str}): "
+            f"({pose.get('x', 0):.2f}, {pose.get('y', 0):.2f}) m  "
+            f"conf {conf:.0f}%{conf_note}  seen {o.get('seen_count', 1)}×"
+            f"{flag_str}{rel_str}"
         )
     return "\n".join(lines)
 
@@ -589,10 +652,42 @@ def run_mcp_agent_stream(
         if mode == "ask":
             bedrock_tools = bedrock_tools + CLOUD_READ_TOOLS_SPEC
 
+        # Select per-mode model and token budget.
+        model_id   = BEDROCK_MODEL_ID or (BEDROCK_MODEL_ID_ASK if mode == "ask" else BEDROCK_MODEL_ID_AGENT)
+        max_tokens = MAX_TOKENS or (MAX_TOKENS_ASK if mode == "ask" else MAX_TOKENS_AGENT)
+
+        # Build vision context: low-confidence Jetson YOLO11 crops let the model
+        # verify ambiguous labels without re-running inference on the Jetson.
+        vision_blocks: list[dict] = []
+        try:
+            import base64 as _b64
+            map_data = _cloud_get("/map") or {}
+            low_conf_crops = [
+                o for o in (map_data.get("objects", []) if isinstance(map_data, dict) else [])
+                if (o.get("confidence") or 1.0) < 0.7 and o.get("image_crop_b64")
+            ]
+            for o in low_conf_crops[:3]:  # cap at 3 images to keep context reasonable
+                vision_blocks.append({
+                    "image": {
+                        "format": "jpeg",
+                        "source": {"bytes": _b64.b64decode(o["image_crop_b64"])},
+                    }
+                })
+            if vision_blocks:
+                vision_blocks.append({"text": (
+                    f"{len(vision_blocks)} Jetson YOLO11 detection crop(s) above have "
+                    f"confidence < 70%.  Use the images to verify or correct the label "
+                    f"before answering."
+                )})
+        except Exception:
+            vision_blocks = []
+
         # 2. Run the Bedrock conversation
         try:
             yield from _bedrock_stream_with_mcp(
-                user_message, mcp, bedrock_tools, system_prompt=system_prompt
+                user_message, mcp, bedrock_tools, system_prompt=system_prompt,
+                model_id=model_id, max_tokens=max_tokens,
+                vision_blocks=vision_blocks or None,
             )
         except ImportError:
             yield "⚠ boto3 not installed in this venv. `pip install boto3`.\n"

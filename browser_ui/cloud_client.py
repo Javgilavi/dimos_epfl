@@ -16,6 +16,7 @@ Usage:
     client.push_detections(candidates)
     client.push_frame(jpeg_bytes)
 """
+from __future__ import annotations
 
 import time
 import json

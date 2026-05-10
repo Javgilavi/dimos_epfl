@@ -8,6 +8,7 @@ Endpoints:
   GET  /              — Dashboard UI
   GET  /health        — Health check (no auth required)
 """
+from __future__ import annotations
 
 import base64
 import os
@@ -303,7 +304,15 @@ async def ingest(request: IngestRequest):
 
 
 def _merge_detected_objects(existing, incoming):
-    """Merge semantic detections instead of replacing the whole map each push."""
+    """Merge semantic detections instead of replacing the whole map each push.
+
+    After position-merging, taxonomy.enrich_object() is applied to every
+    object so the LLM chat boxes receive category, semantic tags, state flags,
+    and inter-object spatial relations.  Enrichment is server-side so the
+    Jetson Nano YOLO11 pipeline keeps its low-latency, label-only output.
+    """
+    from taxonomy import enrich_object, compute_spatial_relations  # noqa: PLC0415
+
     merged = [obj.model_copy(deep=True) for obj in existing]
     for obj in incoming:
         match = None
@@ -328,7 +337,21 @@ def _merge_detected_objects(existing, incoming):
         match.seen_count = new_n
         match.last_seen = max(match.last_seen, obj.last_seen)
         match.source = obj.source or match.source
-    return sorted(merged, key=lambda o: o.last_seen, reverse=True)[:200]
+        # Carry forward any image crop from the newer detection.
+        if obj.image_crop_b64:
+            match.image_crop_b64 = obj.image_crop_b64
+        if obj.bbox:
+            match.bbox = obj.bbox
+
+    result = sorted(merged, key=lambda o: o.last_seen, reverse=True)[:200]
+
+    # Enrich every object with taxonomy metadata and re-compute spatial
+    # relations over the full merged set.
+    for obj in result:
+        enrich_object(obj)
+    compute_spatial_relations(result)
+
+    return result
 
 
 # ── User Endpoints (Req 2: Query) ────────────────────────────
@@ -356,7 +379,7 @@ def _stream_mcp_response(text: str, mode: str) -> StreamingResponse:
 
 @app.post("/query/stream")
 async def query_stream(request: QueryRequest):
-    """🧠 Ask mode — read-only Q&A over the dimos MCP.
+    """Ask mode — read-only Q&A over the dimos MCP.
 
     The agent has the full set of dimos read-only tools (observe, server_status,
     spatial-memory queries, …) but NO movement / action tools. If the user
@@ -395,7 +418,7 @@ async def query_stream(request: QueryRequest):
 
 @app.post("/command/stream")
 async def command_stream(request: QueryRequest):
-    """🤖 Agent mode — full tool access. Can move the robot, explore, etc."""
+    """Agent mode — full tool access. Can move the robot, explore, etc."""
     use_mcp = os.environ.get("USE_MCP_AGENT", "true").lower() == "true"
     if use_mcp:
         try:
@@ -805,6 +828,57 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     th { color: #4fc3f7; font-weight: 600; background: #0d1117; position: sticky; top: 0; }
     .hi { color: #81c784; } .lo { color: #e57373; }
     .empty-row td { color: #555; text-align: center; padding: 10px; }
+
+    /* ── Object section tab bar ─────────────────────────────── */
+    #obj-section { flex: 1 1 50%; min-height: 100px; padding: 9px 12px;
+                   display: flex; flex-direction: column; overflow: hidden; }
+    .obj-tab-bar { display: flex; gap: 3px; margin-bottom: 6px; flex-shrink: 0; }
+    .obj-tab-btn { flex: 1; padding: 4px 0; font-size: 10px; font-weight: 700;
+                   letter-spacing: 0.06em; text-transform: uppercase; border: none;
+                   border-radius: 5px; cursor: pointer; background: transparent;
+                   color: #556; transition: background 0.15s, color 0.15s; }
+    .obj-tab-btn.active { background: #1e2d3d; color: #4fc3f7; }
+    .obj-tab-btn:hover:not(.active) { color: #99a; }
+    #obj-table-panel { overflow-y: auto; flex: 1; display: block; }
+    #obj-table-panel.hidden { display: none; }
+
+    /* ── Semantic cards panel ───────────────────────────────── */
+    .sem-panel { overflow-y: auto; flex: 1; display: none;
+                 flex-direction: column; gap: 7px; }
+    .sem-panel.visible { display: flex; }
+    .sem-card { background: #0d1520; border: 1px solid #1e2d3d;
+                border-radius: 8px; padding: 9px 11px; font-size: 11px;
+                flex-shrink: 0; }
+    .sem-card.low-conf { border-color: #4a2020; }
+    .sem-card.is-dynamic { border-left: 3px solid #ffb74d; }
+    .sem-card-header { display: flex; align-items: baseline;
+                       gap: 7px; margin-bottom: 5px; }
+    .sem-label { font-weight: 700; font-size: 13px; color: #e8f4fd; }
+    .sem-cat   { font-size: 10px; color: #4fc3f7; opacity: 0.7; }
+    .sem-conf  { margin-left: auto; font-size: 11px; font-weight: 700; }
+    .sem-conf.hi   { color: #81c784; }
+    .sem-conf.med  { color: #ffb74d; }
+    .sem-conf.lo   { color: #ef9a9a; }
+    .sem-pos { font-size: 10px; color: #667; font-family: monospace;
+               margin-bottom: 5px; }
+    .sem-seen { font-size: 9px; color: #445; margin-left: 6px; }
+    .chip-row { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 4px; }
+    .chip { font-size: 9px; padding: 2px 6px; border-radius: 10px;
+            font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+    .chip-tag  { background: #1a2e40; color: #64b5f6; border: 1px solid #1e3a54; }
+    .chip-rel  { background: #1e2a1e; color: #a5d6a7; border: 1px solid #2a3e2a; }
+    .chip-flag-block { background: #2e1c1c; color: #ef9a9a; border: 1px solid #4a2020; }
+    .chip-flag-dyn   { background: #2e2a10; color: #ffd54f; border: 1px solid #4a4010; }
+    .chip-flag-frag  { background: #1c1c2e; color: #ce93d8; border: 1px solid #2e2040; }
+    .sem-crop { margin-top: 6px; border-radius: 5px; max-width: 100%;
+                max-height: 72px; object-fit: cover;
+                border: 1px solid #2a3a4a; opacity: 0.88; display: block; }
+    .sem-empty { color: #445; text-align: center; padding: 16px; font-size: 11px; }
+
+    /* ── Spatial relations graph panel ──────────────────────── */
+    #spatial-canvas { width: 100%; flex: 1; min-height: 120px;
+                      border-radius: 6px; background: #080c10;
+                      display: block; cursor: default; }
   </style>
 </head>
 <body>
@@ -826,16 +900,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div id="chat-section">
       <div class="mode-toggle">
         <button class="mode-btn active" id="mode-ask"
-                onclick="window._setMode('ask')">🧠 Ask</button>
+                onclick="window._setMode('ask')">Ask</button>
         <button class="mode-btn" id="mode-cmd"
-                onclick="window._setMode('cmd')">🤖 Agent</button>
+                onclick="window._setMode('cmd')">Agent</button>
       </div>
       <div id="chat-ask" class="chat-pane"></div>
       <div id="chat-cmd" class="chat-pane hidden"></div>
       <div id="chat-input-row">
         <input id="q" placeholder="Where is the chair?"
                onkeydown="if(event.key==='Enter')window._chat()">
-        <button id="mic-btn" onclick="window._mic()" title="Voice input">🎤</button>
+        <button id="mic-btn" onclick="window._mic()" title="Voice input">Mic</button>
         <button id="send-btn" onclick="window._chat()">Ask</button>
       </div>
     </div>
@@ -848,20 +922,41 @@ DASHBOARD_HTML = """<!DOCTYPE html>
              onerror="this.style.opacity='0.12'" alt="">
       </div>
       <div id="obj-section">
-        <div class="section-title">Objects in semantic memory</div>
-        <table>
-          <thead><tr><th>Label</th><th>Pos (m)</th><th>Conf</th></tr></thead>
-          <tbody id="obj-body">
-            <tr class="empty-row"><td colspan="3">Waiting for robot...</td></tr>
-          </tbody>
-        </table>
+        <div class="section-title">Semantic Memory</div>
+        <!-- Three-tab selector: Objects / Semantic / Spatial -->
+        <div class="obj-tab-bar">
+          <button class="obj-tab-btn active" id="tab-table"
+                  onclick="window._objTab('table')">Objects</button>
+          <button class="obj-tab-btn" id="tab-semantic"
+                  onclick="window._objTab('semantic')">Semantic</button>
+          <button class="obj-tab-btn" id="tab-spatial"
+                  onclick="window._objTab('spatial')">Spatial</button>
+        </div>
+
+        <!-- Tab 1: classic table -->
+        <div id="obj-table-panel">
+          <table>
+            <thead><tr><th>Label</th><th>Pos (m)</th><th>Conf</th></tr></thead>
+            <tbody id="obj-body">
+              <tr class="empty-row"><td colspan="3">Waiting for robot...</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Tab 2: semantic cards (tags · flags · image crop) -->
+        <div id="obj-semantic-panel" class="sem-panel"></div>
+
+        <!-- Tab 3: spatial relations canvas -->
+        <div id="obj-spatial-panel" class="sem-panel">
+          <canvas id="spatial-canvas"></canvas>
+        </div>
       </div>
     </div>
   </div>
 </div>
 
 <script>
-/* Chat — two tabs (Ask 🧠 / Agent 🤖) with fully isolated histories */
+/* Chat — two tabs (Ask / Agent) with fully isolated histories */
 let _mode = 'ask';
 
 window._setMode = function(mode) {
@@ -1268,15 +1363,39 @@ for (let i = 0; i < 80; i++) {
   objPool.push(m);
 }
 
+// ── Tab switching for object section ─────────────────────────
+window._objTab = function(tab) {
+  ['table','semantic','spatial'].forEach(function(t) {
+    document.getElementById('tab-' + t).classList.toggle('active', t === tab);
+  });
+  var tp = document.getElementById('obj-table-panel');
+  tp.classList.toggle('hidden', tab !== 'table');
+  ['semantic','spatial'].forEach(function(t) {
+    var p = document.getElementById('obj-' + t + '-panel');
+    p.classList.toggle('visible', t === tab);
+  });
+  if (tab === 'spatial') _drawSpatialGraph(_lastObjects);
+};
+
+var _lastObjects = [];
+
 function updateObjects(objs) {
   const disp = objs.filter(function(o) {
     return o.pose && o.label !== 'robot_position' && o.label.indexOf('nav_goal') !== 0;
   });
+  _lastObjects = disp;
+
+  // ── 3-D scene markers ──────────────────────────────────────
   for (let i = 0; i < objPool.length; i++) {
     if (i < disp.length) {
       const o = disp[i];
       objPool[i].position.set(o.pose.x, 0.15, -o.pose.y);
-      const col = (o.confidence || 0) > 0.7 ? C_HI : C_LO;
+      const conf = o.confidence || 0;
+      // Dynamic objects glow amber; blocked-path objects glow red; others by confidence.
+      let col;
+      if (o.is_dynamic)        col = new THREE.Color(0xffb74d);
+      else if (o.is_blocking_path) col = new THREE.Color(0xef9a9a);
+      else                     col = conf > 0.7 ? C_HI : C_LO;
       objPool[i].material.color.copy(col);
       objPool[i].material.emissive.copy(col).multiplyScalar(0.15);
       objPool[i].visible = true;
@@ -1284,18 +1403,224 @@ function updateObjects(objs) {
       objPool[i].visible = false;
     }
   }
+
+  // ── Tab 1: classic table ───────────────────────────────────
   const tbody = document.getElementById('obj-body');
   if (!disp.length) {
     tbody.innerHTML = '<tr class="empty-row"><td colspan="3">No objects</td></tr>';
+  } else {
+    tbody.innerHTML = disp.map(function(o) {
+      const c = ((o.confidence || 0) * 100).toFixed(0);
+      const cls = c > 70 ? 'hi' : 'lo';
+      return '<tr><td>' + _esc(o.label) + '</td>'
+           + '<td>(' + (o.pose.x || 0).toFixed(1) + ', '
+           + (o.pose.y || 0).toFixed(1) + ')</td>'
+           + '<td class="' + cls + '">' + c + '%</td></tr>';
+    }).join('');
+  }
+
+  // ── Tab 2: semantic cards ──────────────────────────────────
+  const semPanel = document.getElementById('obj-semantic-panel');
+  if (!disp.length) {
+    semPanel.innerHTML = '<div class="sem-empty">No objects detected yet.</div>';
+  } else {
+    semPanel.innerHTML = disp.map(function(o) {
+      const confPct = ((o.confidence || 0) * 100);
+      const confStr = confPct.toFixed(0) + '%';
+      const confCls = confPct >= 70 ? 'hi' : (confPct >= 45 ? 'med' : 'lo');
+      const cardCls = [
+        'sem-card',
+        confPct < 70 ? 'low-conf' : '',
+        o.is_dynamic ? 'is-dynamic' : '',
+      ].filter(Boolean).join(' ');
+
+      // Tags chips
+      const tags = (o.semantic_tags || []).slice(0, 6).map(function(t) {
+        return '<span class="chip chip-tag">' + _esc(t) + '</span>';
+      }).join('');
+
+      // State flag chips
+      const flags = [
+        o.is_blocking_path ? '<span class="chip chip-flag-block">blocks path</span>' : '',
+        o.is_dynamic       ? '<span class="chip chip-flag-dyn">dynamic</span>'      : '',
+        o.is_fragile       ? '<span class="chip chip-flag-frag">fragile</span>'     : '',
+      ].filter(Boolean).join('');
+
+      // Spatial relation chips
+      const rels = (o.spatial_relations || []).slice(0, 4).map(function(r) {
+        return '<span class="chip chip-rel">↔ ' + _esc(r) + '</span>';
+      }).join('');
+
+      // Image crop (low-confidence visual verification from Jetson)
+      const cropHtml = (o.image_crop_b64 && confPct < 70)
+        ? '<img class="sem-crop" src="data:image/jpeg;base64,'
+          + o.image_crop_b64 + '" alt="detection crop"
+             title="Jetson YOLO11 crop — confidence below 70%">'
+        : '';
+
+      const seenTxt = o.seen_count > 1
+        ? '<span class="sem-seen">seen ' + o.seen_count + '×</span>'
+        : '';
+
+      return '<div class="' + cardCls + '">'
+        + '<div class="sem-card-header">'
+        +   '<span class="sem-label">' + _esc(o.label) + '</span>'
+        +   '<span class="sem-cat">' + _esc(o.category || 'object') + '</span>'
+        +   seenTxt
+        +   '<span class="sem-conf ' + confCls + '">' + confStr + '</span>'
+        + '</div>'
+        + '<div class="sem-pos">x ' + (o.pose.x||0).toFixed(2)
+        +   ' m &nbsp; y ' + (o.pose.y||0).toFixed(2)
+        +   ' m &nbsp; z ' + (o.pose.z||0).toFixed(2) + ' m</div>'
+        + (tags  ? '<div class="chip-row">' + tags  + '</div>' : '')
+        + (flags ? '<div class="chip-row">' + flags + '</div>' : '')
+        + (rels  ? '<div class="chip-row">' + rels  + '</div>' : '')
+        + cropHtml
+        + '</div>';
+    }).join('');
+  }
+
+  // Refresh spatial panel if it's currently visible.
+  if (document.getElementById('obj-spatial-panel').classList.contains('visible')) {
+    _drawSpatialGraph(disp);
+  }
+}
+
+// Minimal HTML escape to prevent XSS from label strings.
+function _esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Spatial graph renderer (canvas, Tab 3) ───────────────────
+function _drawSpatialGraph(objs) {
+  const canvas = document.getElementById('spatial-canvas');
+  if (!canvas) return;
+  const panel = document.getElementById('obj-spatial-panel');
+  canvas.width  = panel.clientWidth  || 240;
+  canvas.height = Math.max(160, panel.clientHeight || 200);
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  if (!objs || !objs.length) {
+    ctx.fillStyle = '#445';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('No objects to display', W/2, H/2);
     return;
   }
-  tbody.innerHTML = disp.map(function(o) {
-    const c = ((o.confidence || 0) * 100).toFixed(0);
-    const cls = c > 70 ? 'hi' : 'lo';
-    return '<tr><td>' + o.label + '</td>'
-         + '<td>(' + (o.pose.x || 0).toFixed(1) + ', ' + (o.pose.y || 0).toFixed(1) + ')</td>'
-         + '<td class="' + cls + '">' + c + '%</td></tr>';
-  }).join('');
+
+  // Project world (x,y) into canvas space with auto-fit.
+  const xs = objs.map(function(o){return o.pose.x||0;});
+  const ys = objs.map(function(o){return o.pose.y||0;});
+  const minX=Math.min(...xs),maxX=Math.max(...xs);
+  const minY=Math.min(...ys),maxY=Math.max(...ys);
+  const pad = 40;
+  const rangeX = Math.max(0.5, maxX-minX);
+  const rangeY = Math.max(0.5, maxY-minY);
+  const scaleX = (W - pad*2) / rangeX;
+  const scaleY = (H - pad*2) / rangeY;
+  const scale  = Math.min(scaleX, scaleY);
+  const offX   = pad + ((W-pad*2) - rangeX*scale) / 2;
+  const offY   = pad + ((H-pad*2) - rangeY*scale) / 2;
+
+  function px(o) { return offX + (o.pose.x - minX) * scale; }
+  function py(o) { return offY + (o.pose.y - minY) * scale; }
+
+  // Draw relation edges first (behind nodes).
+  const RELATION_PX = 1.5 * scale; // max RELATION_DISTANCE in canvas px
+  const MAX_REL_PX  = 200; // cap so we don't draw lines across the whole canvas
+  ctx.lineWidth = 1;
+  for (let i=0; i<objs.length; i++) {
+    const rels = objs[i].spatial_relations || [];
+    for (let j=i+1; j<objs.length; j++) {
+      // Check if j is mentioned in i's spatial_relations.
+      const hasRel = rels.some(function(r){
+        return r.toLowerCase().indexOf(objs[j].label.toLowerCase()) !== -1;
+      });
+      if (!hasRel) continue;
+      const dx = px(objs[i]) - px(objs[j]);
+      const dy = py(objs[i]) - py(objs[j]);
+      const d  = Math.hypot(dx, dy);
+      if (d > MAX_REL_PX && d > 5) continue;
+      ctx.beginPath();
+      ctx.moveTo(px(objs[i]), py(objs[i]));
+      ctx.lineTo(px(objs[j]), py(objs[j]));
+      ctx.strokeStyle = 'rgba(100,181,246,0.25)';
+      ctx.stroke();
+    }
+  }
+
+  // Robot origin dot.
+  ctx.beginPath();
+  ctx.arc(offX + (0-minX)*scale, offY + (0-minY)*scale, 7, 0, Math.PI*2);
+  ctx.fillStyle = '#4fc3f7';
+  ctx.fill();
+  ctx.fillStyle = '#4fc3f7';
+  ctx.font = 'bold 9px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('robot', offX + (0-minX)*scale, offY + (0-minY)*scale - 10);
+
+  // Object nodes.
+  objs.forEach(function(o) {
+    const conf = o.confidence || 0;
+    let color;
+    if (o.is_dynamic)        color = '#ffb74d';
+    else if (o.is_blocking_path) color = '#ef9a9a';
+    else if (conf >= 0.7)    color = '#81c784';
+    else                     color = '#e57373';
+
+    const r = 5 + Math.min(4, o.seen_count || 1);
+    const cx = px(o), cy = py(o);
+
+    // Glow for dynamic objects.
+    if (o.is_dynamic) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r+5, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(255,183,77,0.12)';
+      ctx.fill();
+    }
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI*2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Label.
+    ctx.fillStyle = '#dde';
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(o.label, cx, cy - r - 3);
+
+    // Confidence badge for low-confidence detections.
+    if (conf < 0.7) {
+      ctx.fillStyle = '#ef9a9a';
+      ctx.font = 'bold 8px sans-serif';
+      ctx.fillText(((conf*100)|0) + '%', cx, cy + r + 9);
+    }
+  });
+
+  // Legend.
+  const leg = [
+    {color:'#4fc3f7', label:'robot'},
+    {color:'#81c784', label:'high conf'},
+    {color:'#e57373', label:'low conf'},
+    {color:'#ffb74d', label:'dynamic'},
+    {color:'#ef9a9a', label:'blocks path'},
+  ];
+  leg.forEach(function(l, i) {
+    const lx = 8, ly = H - 14 - i*14;
+    ctx.beginPath(); ctx.arc(lx+4, ly, 4, 0, Math.PI*2);
+    ctx.fillStyle = l.color; ctx.fill();
+    ctx.fillStyle = '#778'; ctx.font = '9px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(l.label, lx+11, ly+3);
+  });
 }
 
 // ── Goal/path overlay ────────────────────────────────────────
