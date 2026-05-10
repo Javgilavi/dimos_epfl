@@ -16,14 +16,25 @@
 from dimos.agents.mcp.mcp_client import McpClient
 from dimos.agents.mcp.mcp_server import McpServer
 from dimos.core.coordination.blueprints import autoconnect
+from dimos.core.transport import LCMTransport
+from dimos.msgs.vision_msgs.Detection2DArray import Detection2DArray
+from dimos.perception.yolo11_skill import Yolo11DetectionSkill
 from dimos.robot.unitree.go2.blueprints.agentic._common_agentic import _common_agentic
 from dimos.robot.unitree.go2.blueprints.smart.unitree_go2_spatial import unitree_go2_spatial
 
 unitree_go2_agentic = autoconnect(
     unitree_go2_spatial,
+    Yolo11DetectionSkill.blueprint(),
     McpServer.blueprint(),
     McpClient.blueprint(model="bedrock_converse:us.anthropic.claude-sonnet-4-6"),
     _common_agentic,
+).transports(
+    {
+        ("detections", Yolo11DetectionSkill): LCMTransport(
+            "/yolo11/detections",
+            Detection2DArray,
+        ),
+    }
 )
 
 __all__ = ["unitree_go2_agentic"]

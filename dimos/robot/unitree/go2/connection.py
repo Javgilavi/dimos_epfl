@@ -74,6 +74,15 @@ class ConnectionConfig(ModuleConfig):
 
 
 DEFAULT_GO2_EXTERNAL_CAMERA_URL = "http://192.168.123.18:8888/frame"
+GO2_EXTERNAL_CAMERA_CANDIDATES = (
+    DEFAULT_GO2_EXTERNAL_CAMERA_URL,
+    "http://192.168.123.18:8888/snapshot",
+    "http://192.168.123.18:8888/image.jpg",
+    "http://192.168.123.18:8080/frame",
+    "http://192.168.123.18:8000/frame",
+    "http://192.168.123.18:5000/frame",
+    "http://192.168.123.18:5001/frame",
+)
 
 
 class Go2ConnectionProtocol(Protocol):
@@ -133,6 +142,42 @@ def _external_camera_info_static() -> CameraInfo:
     )
 
 
+def _fetch_external_camera_frame(camera_url: str, timeout: float = 3.0) -> Image:
+    with urlopen(camera_url, timeout=timeout) as response:
+        data = response.read()
+    arr = np.frombuffer(data, dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if frame is None:
+        raise ValueError(f"HTTP camera returned undecodable JPEG from {camera_url}")
+    return Image.from_opencv(
+        frame,
+        frame_id="camera_optical",
+        ts=time.time(),
+    )
+
+
+def _resolve_external_camera_url() -> str:
+    configured = os.environ.get("GO2_EXTERNAL_CAMERA_URL")
+    if configured:
+        return configured
+
+    for candidate in GO2_EXTERNAL_CAMERA_CANDIDATES:
+        try:
+            _fetch_external_camera_frame(candidate, timeout=0.75)
+            logger.info("Using external Go2 camera stream: %s", candidate)
+            return candidate
+        except Exception:
+            continue
+
+    logger.warning(
+        "No external Go2 camera endpoint responded; defaulting to %s. "
+        "Start scripts/jetson_camera_server.py on the Jetson or set "
+        "GO2_EXTERNAL_CAMERA_URL.",
+        DEFAULT_GO2_EXTERNAL_CAMERA_URL,
+    )
+    return DEFAULT_GO2_EXTERNAL_CAMERA_URL
+
+
 # Static camera mount chain: base_link -> camera_link -> camera_optical.
 # TODO we need a standardized way to specify this for all cameras in dimos
 BASE_TO_OPTICAL: Transform = Transform(
@@ -163,10 +208,7 @@ def make_connection(ip: str | None, cfg: GlobalConfig) -> Go2ConnectionProtocol:
         connection = UnitreeWebRTCConnection(ip)
         use_external_camera = os.environ.get("GO2_USE_EXTERNAL_CAMERA", "true").lower() == "true"
         if use_external_camera:
-            camera_url = os.environ.get(
-                "GO2_EXTERNAL_CAMERA_URL",
-                DEFAULT_GO2_EXTERNAL_CAMERA_URL,
-            )
+            camera_url = _resolve_external_camera_url()
             return ExternalCameraConnection(connection, camera_url=camera_url)
         return connection
 
@@ -218,17 +260,7 @@ class ExternalCameraConnection:
             while running:
                 started = time.time()
                 try:
-                    with urlopen(self.camera_url, timeout=3.0) as response:
-                        data = response.read()
-                    arr = np.frombuffer(data, dtype=np.uint8)
-                    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                    if frame is None:
-                        raise ValueError("HTTP camera returned undecodable JPEG")
-                    image = Image.from_opencv(
-                        frame,
-                        frame_id="camera_optical",
-                        ts=time.time(),
-                    )
+                    image = _fetch_external_camera_frame(self.camera_url, timeout=3.0)
                     failures = 0
                     subject.on_next(image)
                 except (URLError, TimeoutError, OSError, ValueError) as exc:

@@ -149,6 +149,34 @@ stop
 
 The agent has 22 tools available: `navigate_with_text`, `begin_exploration`, `end_exploration`, `start_patrol`, `look_out_for`, `tag_location`, `follow_person`, `execute_sport_command`, `relative_move`, `wait`, `speak` (no-op TTS — text only), and more.
 
+### External camera + YOLO11 segmentation
+
+For the real robot with the added Jetson/USB camera, start the camera HTTP
+server on the Jetson and run workstation-side YOLO11 segmentation:
+
+```bash
+# Jetson/camera host
+python scripts/jetson_camera_server.py --host 0.0.0.0 --port 8888 --device 0
+
+# Workstation
+python scripts/workstation_yolo.py \
+  --stream-url http://192.168.123.18:8888/frame \
+  --model yolo11s-seg.pt \
+  --feed-dimos \
+  --cloud-url http://localhost:8080 \
+  --headless
+```
+
+This publishes `/color_image#sensor_msgs.Image`, `/yolo11/detections`,
+`/yolo11/annotations`, and `/yolo11/segmented_image` so DimOS visualizers and
+downstream perception/navigation modules can use the same segmented camera feed.
+`unitree-go2-agentic` also exposes MCP tools `get_latest_yolo_detections` and
+`get_best_yolo_detection`, so the LLM can ask YOLO what is currently visible and
+use a returned person bbox to start `follow_person`.
+When `--cloud-url` points at robohack2026, YOLO also pushes the segmented camera
+overlay to the UI and adds detections with confidence >= `--semantic-threshold`
+(default `0.70`) to the semantic map using the latest `/odom` pose.
+
 ### Other ways to interact
 
 - **Browser chat**: open `http://localhost:5555` once dimos is running.
