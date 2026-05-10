@@ -668,13 +668,31 @@ async def get_live_pose(_tok: str = Depends(verify_session)):
 # ── Navigation — goal queue ───────────────────────────────────
 
 _goal_queue: list[dict] = []
+_active_goal: dict | None = None
 
 
 @app.post("/navigate")
 async def navigate_to_point(x: float, y: float, z: float = 0.0, _tok: str = Depends(verify_session)):
     """Queue a navigation goal — nav_bridge forwards it to DimOS over LCM."""
-    _goal_queue.append({"x": x, "y": y, "z": z, "ts": time.time()})
+    global _active_goal
+    goal = {"x": x, "y": y, "z": z, "ts": time.time()}
+    _goal_queue.append(goal)
+    _active_goal = goal
     return {"status": "queued", "target": {"x": x, "y": y, "z": z}}
+
+
+@app.get("/goal/active")
+async def get_active_goal(_tok: str = Depends(verify_session)):
+    """Current navigation goal — polled by all dashboard viewers."""
+    return _active_goal or {}
+
+
+@app.post("/goal/clear")
+async def clear_active_goal(_tok: str = Depends(verify_session)):
+    """Called by any viewer when the robot reaches the goal."""
+    global _active_goal
+    _active_goal = None
+    return {"status": "cleared"}
 
 
 @app.get("/goals/pending")
@@ -1470,6 +1488,7 @@ goalMarker.visible = false;
 scene.add(goalMarker);
 
 let _activeGoal = null;
+let _goalClearSent = false;
 function updateGoalLine() {
   if (!_activeGoal) return;
   const dist = Math.hypot(_activeGoal.x - _robotX, _activeGoal.y - _robotY);
@@ -1477,8 +1496,13 @@ function updateGoalLine() {
     _activeGoal = null;
     goalLine.visible = false;
     goalMarker.visible = false;
+    if (!_goalClearSent) {
+      _goalClearSent = true;
+      _apiFetch('/goal/clear', {method: 'POST'}).catch(function(){});
+    }
     return;
   }
+  _goalClearSent = false;
   goalLineGeo.setFromPoints([
     new THREE.Vector3(_robotX, 0.08, -_robotY),
     new THREE.Vector3(_activeGoal.x, 0.08, -_activeGoal.y),
@@ -1647,11 +1671,32 @@ async function pollPointcloud() {
   } catch(e) {}
 }
 
+let _lastGoalTs = 0;
+async function pollGoal() {
+  try {
+    const d = await (await _apiFetch('/goal/active')).json();
+    if (d && d.x !== undefined) {
+      if ((d.ts || 0) !== _lastGoalTs) {
+        _lastGoalTs = d.ts || 0;
+        _goalClearSent = false;
+        _activeGoal = {x: d.x, y: d.y};
+        updateGoalLine();
+      }
+    } else if (_activeGoal) {
+      // Server cleared the goal (another viewer's robot arrived)
+      _activeGoal = null;
+      goalLine.visible = false;
+      goalMarker.visible = false;
+    }
+  } catch(e) {}
+}
+
 // Pose at ~10 Hz so the marker tracks live; pointcloud at 4 Hz; objects at 0.5 Hz.
 setInterval(pollPose,       100);
 setInterval(pollPointcloud, 250);
 setInterval(pollSem,       2000);
-pollPose(); pollPointcloud(); pollSem();
+setInterval(pollGoal,      1000);
+pollPose(); pollPointcloud(); pollSem(); pollGoal();
 
 // ── Resize: ResizeObserver covers BOTH window resize AND sidebar drags ──
 function _fitRendererToPanel() {
