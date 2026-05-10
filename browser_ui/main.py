@@ -727,7 +727,7 @@ async def dashboard():
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html>
 <head>
-  <title>SpatialMind — Go2 3D Live</title>
+  <title>ArgOS — Go2 3D Live</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <script type="importmap">
   {
@@ -885,7 +885,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <body>
 
 <header>
-  <h1>SpatialMind</h1>
+  <h1>ArgOS</h1>
   <span class="badge">Go2 · 3D Live</span>
   <span id="robot-pos"></span>
   <div id="conn-dot"></div>
@@ -936,7 +936,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <div id="login-overlay">
   <div id="login-box">
-    <h2>SpatialMind</h2>
+    <h2>ArgOS</h2>
     <p>Go2 · 3D Live</p>
     <input id="pw-inp" type="password" placeholder="Password"
            onkeydown="if(event.key==='Enter')window._login()">
@@ -1739,7 +1739,7 @@ if __name__ == "__main__":
     import argparse
     import uvicorn
 
-    parser = argparse.ArgumentParser(description="SpatialMind cloud server")
+    parser = argparse.ArgumentParser(description="ArgOS cloud server")
     parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8080, help="Bind port (default: 8080)")
     parser.add_argument(

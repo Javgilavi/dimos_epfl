@@ -69,10 +69,12 @@ def run_pose_subscriber(cloud_url: str, robot_id: str, hz: float, lc):
     last_push = 0.0
     latest = [None]
 
-    # Delta-yaw estimation — same approach as the old ws_bridge.py.
-    # We derive heading from consecutive positions rather than trusting msg.yaw
-    # directly, since the LCM odom frame convention differs from what the
-    # Three.js dashboard expects (atan2 gives a consistent CCW angle from +X).
+    # Delta-yaw estimation — derive heading from position delta rather than
+    # trusting msg.yaw directly (LCM odom convention differs from Three.js).
+    # EMA smoothing on the angle prevents jarring snaps; wraparound is handled
+    # via atan2(sin(diff), cos(diff)) so 359°→1° doesn't jump through 180°.
+    _MOVE_THRESH = 0.05   # metres — ignore deltas smaller than this (vibration filter)
+    _SMOOTH      = 0.20   # EMA alpha — higher = snappier, lower = smoother
     _prev_xy: list[tuple[float, float] | None] = [None]
     _heading: list[float] = [0.0]
 
@@ -95,12 +97,16 @@ def run_pose_subscriber(cloud_url: str, robot_id: str, hz: float, lc):
         try:
             x, y = float(msg.x), float(msg.y)
 
-            # Update heading from position delta when movement exceeds noise floor.
+            # Update heading from position delta when movement is large enough.
             if _prev_xy[0] is not None:
                 dx = x - _prev_xy[0][0]
                 dy = y - _prev_xy[0][1]
-                if math.sqrt(dx * dx + dy * dy) > 0.004:  # 4 mm noise filter
-                    _heading[0] = math.atan2(dy, dx)
+                if math.sqrt(dx * dx + dy * dy) > _MOVE_THRESH:
+                    raw = math.atan2(dy, dx)
+                    # Shortest-path angle difference (handles ±π wraparound)
+                    diff = math.atan2(math.sin(raw - _heading[0]),
+                                      math.cos(raw - _heading[0]))
+                    _heading[0] += _SMOOTH * diff
             _prev_xy[0] = (x, y)
 
             pose = {

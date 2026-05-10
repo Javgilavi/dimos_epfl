@@ -1,4 +1,4 @@
-# SpatialMind — Cloud Middleware
+# ArgOS — Cloud Middleware
 
 FastAPI server that bridges a Unitree Go2 robot (running DimOS) to a live web dashboard with semantic querying via AWS Bedrock.
 

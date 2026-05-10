@@ -1,5 +1,5 @@
 """
-Auth — bridge password + viewer session tokens for SpatialMind.
+Auth — bridge password + viewer session tokens for ArgOS.
 
 Config (env vars):
   BRIDGE_PASSWORD    — shared secret for robot-side bridge scripts (empty = disabled)
