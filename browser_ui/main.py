@@ -758,24 +758,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
        The user drags #h-resize to change it. */
     .layout { display: grid; height: calc(100vh - 44px);
               grid-template-columns: 1fr 5px clamp(280px, var(--sidebar-w, 32vw), 60vw); }
-    @media (max-width: 768px) {
-      .layout { grid-template-columns: 1fr; grid-template-rows: 52vh 5px 1fr; }
-      #h-resize { display: none; }
-      #v-resize { display: none !important; }
-      /* Mobile tab bar */
-      #mobile-tabs { display: flex !important; }
-      /* On mobile each panel fills whatever space remains below the tab bar */
-      #chat-section { display: none !important; flex: 1 1 auto; }
-      #chat-section.m-active { display: flex !important; }
-      #bottom-panel { display: none !important; flex: 1 1 auto; }
-      #bottom-panel.m-active { display: flex !important; }
-      /* Camera-only: hide objects */
-      #bottom-panel.m-cam #obj-section { display: none; }
-      #bottom-panel.m-cam #cam-section { flex: 1 1 auto; min-height: 0; }
-      /* Objects-only: hide camera */
-      #bottom-panel.m-obj #cam-section { display: none; }
-      #bottom-panel.m-obj #obj-section { flex: 1 1 auto; overflow-y: auto; }
-    }
     /* Mobile tab bar — hidden on desktop */
     #mobile-tabs { display: none; flex-shrink: 0;
       background: #0d1117; border-bottom: 1px solid #1e2d3d; }
@@ -904,6 +886,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       font-weight:600; margin-bottom:8px; }
     #login-submit:hover { background:#1976d2; }
     #login-err { color:#ef9a9a; font-size:12px; min-height:16px; }
+
+    /* ── Mobile layout — placed last so it overrides all desktop rules ── */
+    @media (max-width: 768px) {
+      /* Stack map above sidebar; map at 45vh leaves ~55vh for content */
+      .layout { grid-template-columns: 1fr; grid-template-rows: 45vh 5px 1fr; }
+      #h-resize { display: none; }
+      #v-resize { display: none !important; }
+      #sidebar { border-left: none; border-top: 1px solid #1e2d3d; }
+      /* Show mobile tab bar */
+      #mobile-tabs { display: flex !important; }
+      /* Each panel is hidden by default, shown when its tab is active.
+         flex:1 !important overrides the desktop flex:0 0 calc(chat-frac*100%) */
+      #chat-section   { display: none !important; flex: 1 !important; }
+      #chat-section.m-active { display: flex !important; }
+      #bottom-panel   { display: none !important; flex: 1 !important; }
+      #bottom-panel.m-active { display: flex !important; }
+      /* Camera tab */
+      #bottom-panel.m-cam #obj-section { display: none; }
+      #bottom-panel.m-cam #cam-section { flex: 1 1 auto; min-height: 0; border-bottom: none; }
+      /* Objects tab */
+      #bottom-panel.m-obj #cam-section { display: none; }
+      #bottom-panel.m-obj #obj-section { flex: 1 1 auto; overflow-y: auto; }
+      /* Larger touch targets on mobile tabs */
+      .mtab { padding: 12px 4px; font-size: 12px; }
+      /* Camera image: don't let it force overflow */
+      #cam-img { min-height: 0; }
+    }
   </style>
 </head>
 <body>
