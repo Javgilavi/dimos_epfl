@@ -226,6 +226,14 @@ async def login(request: Request):
     return {"token": token, "auth": True}
 
 
+@app.post("/auth/ping")
+async def session_ping(_tok: str = Depends(verify_session)):
+    """Keepalive — browser sends this every 10 s to hold the session slot.
+    If pings stop (tab closed), the session expires after SESSION_TTL seconds.
+    """
+    return {"ok": True}
+
+
 # ── Speech-to-text (AWS Transcribe) ───────────────────────────
 
 @app.post("/speech/transcribe")
@@ -936,7 +944,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 const _AUTH_REQUIRED = _AUTH_PLACEHOLDER_;
 let _sessionToken = sessionStorage.getItem('sm_token') || '';
 
+let _pingTimer = null;
+function _startPing() {
+  if (_pingTimer) clearInterval(_pingTimer);
+  _pingTimer = setInterval(function() {
+    _apiFetch('/auth/ping', {method: 'POST'}).catch(function(){});
+  }, 10000);
+}
+function _stopPing() {
+  if (_pingTimer) { clearInterval(_pingTimer); _pingTimer = null; }
+}
+
 function _showLogin(msg) {
+  _stopPing();
   const ov = document.getElementById('login-overlay');
   ov.classList.add('show');
   if (msg) document.getElementById('login-err').textContent = msg;
@@ -944,6 +964,7 @@ function _showLogin(msg) {
 function _hideLogin() {
   document.getElementById('login-overlay').classList.remove('show');
   document.getElementById('login-err').textContent = '';
+  _startPing();
   _initCamStream();
 }
 function _initCamStream() {
