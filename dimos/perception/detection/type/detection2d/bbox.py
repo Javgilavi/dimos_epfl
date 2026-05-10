@@ -357,11 +357,16 @@ class Detection2DBBox(Detection2D):
         points = self.to_points_annotation()
         texts = self.to_text_annotation()
 
+        # circles_length / circles MUST be initialized — otherwise __slots__
+        # leaves them undefined, the encoder writes garbage for circles_length,
+        # and the subscriber crashes in _decode_one trying to read N circles.
         return ImageAnnotations(
             texts=texts,
             texts_length=len(texts),
             points=points,
             points_length=len(points),
+            circles=[],
+            circles_length=0,
         )
 
     @classmethod

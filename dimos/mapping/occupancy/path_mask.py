@@ -12,12 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+import time
+
 import cv2
 import numpy as np
 from numpy.typing import NDArray
 
 from dimos.msgs.nav_msgs.OccupancyGrid import CostValues, OccupancyGrid
 from dimos.msgs.nav_msgs.Path import Path
+
+_logger = logging.getLogger(__name__)
+# Rate-limit the "path heavily occupied" warning — it can fire multiple times
+# per second when the costmap is noisy and would otherwise drown out the log.
+_LAST_BLOCKED_WARN: float = 0.0
 
 
 def make_path_mask(
@@ -86,10 +94,21 @@ def make_path_mask(
     occupied_count = np.sum(occupied_in_path)
 
     if occupied_count / total_points > 0.05:
-        raise ValueError(
-            f"More than 5% of path points are occupied: "
-            f"{occupied_count}/{total_points} ({100 * occupied_count / total_points:.1f}%)"
-        )
+        # Path is heavily blocked. Don't raise — that crashed the local
+        # planner thread and froze navigation. Instead, return the un-filtered
+        # mask so is_obstacle_ahead() sees occupied cells and triggers a
+        # clean replan.
+        global _LAST_BLOCKED_WARN
+        _now = time.time()
+        if _now - _LAST_BLOCKED_WARN > 5.0:
+            _LAST_BLOCKED_WARN = _now
+            _logger.warning(
+                "Path heavily blocked: %d/%d points occupied (%.1f%%) — "
+                "asking planner to replan.",
+                occupied_count, total_points,
+                100 * occupied_count / total_points,
+            )
+        return bool_mask
 
     # Some of the points on the edge of the path may be occupied due to
     # rounding. Remove them.

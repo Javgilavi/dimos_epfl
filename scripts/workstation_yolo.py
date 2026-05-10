@@ -27,6 +27,29 @@ from urllib.request import Request, urlopen
 import cv2
 import numpy as np
 
+# Approximate real-world heights (metres) for distance estimation from bbox height.
+# Used in the pinhole model: distance ≈ (real_height_m * fy) / bbox_height_px.
+# These are deliberately rough — the goal is "place the marker in the right
+# direction at roughly the right distance", not metric reconstruction.
+COCO_HEIGHTS_M: dict[int, float] = {
+    0: 1.70,                                            # person
+    1: 1.05, 2: 1.55, 3: 1.20, 5: 3.20, 7: 2.80,        # bicycle, car, motorcycle, bus, truck
+    14: 0.20, 15: 0.30, 16: 0.55, 17: 1.60, 18: 0.90,   # bird, cat, dog, horse, sheep
+    19: 1.40, 20: 3.00, 21: 1.80, 22: 1.40, 23: 5.00,   # cow, elephant, bear, zebra, giraffe
+    24: 0.45, 25: 1.00, 26: 0.30, 28: 0.55,             # backpack, umbrella, handbag, suitcase
+    32: 0.20, 39: 0.25, 40: 0.18, 41: 0.10, 45: 0.08,   # ball, bottle, wine glass, cup, bowl
+    46: 0.18, 47: 0.08, 49: 0.08, 56: 0.85, 57: 0.85,   # banana, apple, orange, chair, couch
+    58: 0.50, 59: 0.55, 60: 0.75, 61: 0.40,             # potted plant, bed, dining table, toilet
+    62: 0.55, 63: 0.02, 64: 0.04, 65: 0.05, 66: 0.02,   # tv, laptop, mouse, remote, keyboard
+    67: 0.15, 68: 0.30, 69: 0.60, 70: 0.20, 71: 0.20,   # cell phone, microwave, oven, toaster, sink
+    72: 1.70, 73: 0.22, 74: 0.30, 75: 0.30,             # refrigerator, book, clock, vase
+    77: 0.30, 79: 0.15,                                  # teddy bear, toothbrush
+}
+DEFAULT_HEIGHT_M = 0.50
+MIN_DISTANCE_M = 0.4
+MAX_DISTANCE_M = 8.0
+
+
 COCO_NAMES = {
     0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 4: "airplane",
     5: "bus", 6: "train", 7: "truck", 8: "boat", 9: "traffic light",
@@ -119,6 +142,8 @@ def collect_detections(results) -> list[dict]:
                 "confidence": conf,
                 "bbox": [x1, y1, x2, y2],
                 "center": [(x1 + x2) / 2.0, (y1 + y2) / 2.0],
+                "bbox_h": max(1.0, y2 - y1),
+                "bbox_w": max(1.0, x2 - x1),
             }
         )
     return detections
@@ -134,6 +159,7 @@ class DimosYoloPublisher:
         annotations_topic: str,
         segmented_image_topic: str,
         publish_raw_image: bool = True,
+        publish_annotations: bool = False,
     ) -> None:
         import lcm as lcmlib
         from dimos.msgs.sensor_msgs.Image import Image
@@ -149,6 +175,12 @@ class DimosYoloPublisher:
         self.annotations_topic = annotations_topic
         self.segmented_image_topic = segmented_image_topic
         self.publish_raw_image = publish_raw_image
+        # dimos's internal Yolo11DetectionSkill is also publishing on
+        # /yolo11/annotations. Two writers on the same channel produce
+        # corrupted bytes that crash the subscriber's _decode_one in a tight
+        # loop. Default OFF — workstation YOLO publishes Detection2DArray and
+        # the segmented image, but not the foxglove annotation overlay.
+        self.publish_annotations = publish_annotations
 
     def publish(self, frame: np.ndarray, results, annotated: np.ndarray | None = None) -> None:
         ts = time.time()
@@ -165,10 +197,11 @@ class DimosYoloPublisher:
             self.detections_topic,
             detections.to_ros_detection2d_array().lcm_encode(),
         )
-        self.lc.publish(
-            self.annotations_topic,
-            detections.to_foxglove_annotations().lcm_encode(),
-        )
+        if self.publish_annotations:
+            self.lc.publish(
+                self.annotations_topic,
+                detections.to_foxglove_annotations().lcm_encode(),
+            )
 
         if annotated is not None:
             segmented = self.image_cls.from_opencv(
@@ -189,6 +222,7 @@ class CloudSemanticPublisher:
         threshold: float,
         semantic_distance: float,
         camera_fx: float,
+        camera_fy: float,
         pose_topic: str,
         semantic_hz: float,
         frame_hz: float,
@@ -199,8 +233,9 @@ class CloudSemanticPublisher:
         self.cloud_url = cloud_url.rstrip("/")
         self.robot_id = robot_id
         self.threshold = threshold
-        self.semantic_distance = semantic_distance
+        self.semantic_distance = semantic_distance  # fallback when no class height
         self.camera_fx = camera_fx
+        self.camera_fy = camera_fy
         self.semantic_period = 1.0 / max(0.1, semantic_hz)
         self.frame_period = 1.0 / max(0.1, frame_hz)
         self.pose_cls = PoseStamped
@@ -223,6 +258,13 @@ class CloudSemanticPublisher:
         except Exception:
             return
 
+    def _estimate_distance(self, det: dict) -> float:
+        """Pinhole-model distance from bbox height + class real-world height."""
+        real_h = COCO_HEIGHTS_M.get(int(det.get("class_id", -1)), DEFAULT_HEIGHT_M)
+        bbox_h = float(det.get("bbox_h", 0.0)) or 1.0
+        d = (real_h * self.camera_fy) / bbox_h
+        return max(MIN_DISTANCE_M, min(MAX_DISTANCE_M, d))
+
     def _object_pose(self, det: dict, width: int) -> dict[str, float]:
         pose = self.pose
         if pose is None:
@@ -230,9 +272,10 @@ class CloudSemanticPublisher:
         cx = det["center"][0]
         bearing = math.atan2(cx - width / 2.0, self.camera_fx)
         heading = pose["yaw"] + bearing
+        distance = self._estimate_distance(det)
         return {
-            "x": pose["x"] + self.semantic_distance * math.cos(heading),
-            "y": pose["y"] + self.semantic_distance * math.sin(heading),
+            "x": pose["x"] + distance * math.cos(heading),
+            "y": pose["y"] + distance * math.sin(heading),
             "z": 0.0,
         }
 
@@ -362,7 +405,13 @@ def main() -> None:
         "--camera-fx",
         type=float,
         default=float(os.environ.get("GO2_EXTERNAL_CAMERA_FX", "576")),
-        help="Camera focal length in pixels for bearing estimate",
+        help="Camera focal length in pixels (x) for bearing estimate",
+    )
+    parser.add_argument(
+        "--camera-fy",
+        type=float,
+        default=float(os.environ.get("GO2_EXTERNAL_CAMERA_FY", "576")),
+        help="Camera focal length in pixels (y) for distance-from-bbox-height",
     )
     parser.add_argument(
         "--pose-topic",
@@ -371,6 +420,15 @@ def main() -> None:
     )
     parser.add_argument("--semantic-hz", type=float, default=1.0)
     parser.add_argument("--ui-frame-hz", type=float, default=12.0)
+    parser.add_argument(
+        "--publish-annotations",
+        action="store_true",
+        help=(
+            "Also publish foxglove ImageAnnotations to LCM. Default OFF — "
+            "dimos's internal Yolo11DetectionSkill already publishes on the "
+            "same topic, and two publishers cause subscriber decode errors."
+        ),
+    )
     parser.add_argument(
         "--no-cloud",
         action="store_true",
@@ -389,6 +447,7 @@ def main() -> None:
             annotations_topic=args.annotations_topic,
             segmented_image_topic=args.segmented_image_topic,
             publish_raw_image=args.publish_lcm or args.feed_dimos,
+            publish_annotations=args.publish_annotations,
         )
         if args.publish_lcm or args.feed_dimos
         else None
@@ -400,6 +459,7 @@ def main() -> None:
             threshold=args.semantic_threshold,
             semantic_distance=args.semantic_distance,
             camera_fx=args.camera_fx,
+            camera_fy=args.camera_fy,
             pose_topic=args.pose_topic,
             semantic_hz=args.semantic_hz,
             frame_hz=args.ui_frame_hz,
