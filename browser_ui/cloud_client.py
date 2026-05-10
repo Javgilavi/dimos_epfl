@@ -24,6 +24,8 @@ import threading
 from dataclasses import dataclass, asdict
 from typing import Any
 
+import os
+
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -55,10 +57,12 @@ class CloudClient:
         cloud_url: str = "http://localhost:8080",
         robot_id: str = "go2_a",
         timeout: float = 2.0,
+        bridge_password: str = "",
     ):
         self.cloud_url = cloud_url.rstrip("/")
         self.robot_id = robot_id
         self.timeout = timeout
+        self._bridge_password = bridge_password or os.environ.get("BRIDGE_PASSWORD", "")
         self._client = httpx.Client(timeout=timeout)
         self._connected = False
         self._last_push_time = 0.0
@@ -67,6 +71,12 @@ class CloudClient:
     @property
     def connected(self) -> bool:
         return self._connected
+
+    def _bridge_headers(self, extra: dict | None = None) -> dict:
+        h = dict(extra or {})
+        if self._bridge_password:
+            h["X-Bridge-Password"] = self._bridge_password
+        return h
 
     # ── Push Detections ───────────────────────────────────────
 
@@ -90,6 +100,7 @@ class CloudClient:
             resp = self._client.post(
                 f"{self.cloud_url}/ingest",
                 json=payload,
+                headers=self._bridge_headers(),
             )
             self._connected = True
             self._last_push_time = time.time()
@@ -142,10 +153,10 @@ class CloudClient:
             resp = self._client.post(
                 f"{self.cloud_url}/frames",
                 content=jpeg_bytes,
-                headers={
+                headers=self._bridge_headers({
                     "Content-Type": "image/jpeg",
                     "X-Robot-Id": self.robot_id,
-                },
+                }),
             )
             self._connected = True
             return resp.status_code == 200
