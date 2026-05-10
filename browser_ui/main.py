@@ -965,8 +965,12 @@ window._login = async function() {
 };
 /* _apiFetch — wraps fetch() to add session token and handle 401 */
 function _apiFetch(url, opts) {
+  // Not logged in yet — return a silent no-op so polling doesn't spam "session expired"
+  if (_AUTH_REQUIRED && !_sessionToken) {
+    return Promise.resolve({ok: false, status: 401, json: function(){ return Promise.resolve({}); }});
+  }
   opts = opts || {};
-  if (_AUTH_REQUIRED && _sessionToken) {
+  if (_AUTH_REQUIRED) {
     opts.headers = Object.assign({}, opts.headers || {}, {'X-Session-Token': _sessionToken});
   }
   return fetch(url, opts).then(function(r) {
