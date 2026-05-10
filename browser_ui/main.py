@@ -1539,5 +1539,23 @@ new ResizeObserver(_fitRendererToPanel).observe(panel);
 
 
 if __name__ == "__main__":
+    import argparse
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
+
+    parser = argparse.ArgumentParser(description="SpatialMind cloud server")
+    parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=8080, help="Bind port (default: 8080)")
+    parser.add_argument(
+        "--server-only", action="store_true",
+        help="Disable auto-spawning of local LCM bridges (use on cloud/EC2)"
+    )
+    parser.add_argument(
+        "--reload", action="store_true",
+        help="Enable uvicorn auto-reload (development only)"
+    )
+    args = parser.parse_args()
+
+    if args.server_only:
+        os.environ["AUTO_BRIDGES"] = "false"
+
+    uvicorn.run("main:app", host=args.host, port=args.port, reload=args.reload)
