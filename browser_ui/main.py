@@ -17,6 +17,7 @@ import json
 import logging
 import zlib
 import uuid
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -35,6 +36,7 @@ from models import (
     ErrorResponse, WorldState,
 )
 from world_store import WorldStateStore
+import mcp_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +49,10 @@ USE_MEMORY_STORE = os.environ.get("USE_MEMORY_STORE", "true").lower() == "true"
 
 # ── App Lifespan ──────────────────────────────────────────────
 
-# Spawn direct-LCM bridges when dimos is reachable locally. Set
-# AUTO_BRIDGES=false to disable, e.g. when running the cloud UI on EC2.
-AUTO_BRIDGES = os.environ.get("AUTO_BRIDGES", "true").lower() == "true"
+# Cloud/server split is the default: EC2 serves the UI/API only, while the
+# laptop runs run_bridges.py next to DimOS. Set AUTO_BRIDGES=true only for
+# single-machine local development.
+AUTO_BRIDGES = os.environ.get("AUTO_BRIDGES", "false").lower() == "true"
 CAMERA_BRIDGE_FPS = os.environ.get("CAMERA_BRIDGE_FPS", "10")
 CAMERA_BRIDGE_SOURCE = os.environ.get("CAMERA_BRIDGE_SOURCE", "auto")
 CAMERA_HTTP_URL = os.environ.get("CAMERA_HTTP_URL", "http://192.168.123.18:8888/frame")
@@ -232,6 +235,33 @@ async def session_ping(_tok: str = Depends(verify_session)):
     If pings stop (tab closed), the session expires after SESSION_TTL seconds.
     """
     return {"ok": True}
+
+
+# ── Local DimOS MCP proxy for cloud deployments ───────────────
+
+@app.get("/bridge/mcp/pending")
+async def bridge_mcp_pending(_: None = Depends(verify_bridge), timeout: float = 25.0):
+    """Long-poll one pending MCP JSON-RPC request for the laptop bridge.
+
+    The EC2 server queues requests here when the browser Agent asks Bedrock to
+    call a DimOS MCP tool. The laptop-side mcp_proxy_bridge.py forwards the
+    payload to local http://localhost:9990/mcp and posts the result back.
+    """
+    item = await asyncio.to_thread(mcp_proxy.get_pending, min(max(timeout, 0.1), 30.0))
+    return item or {"id": None}
+
+
+@app.post("/bridge/mcp/response")
+async def bridge_mcp_response(request: Request, _: None = Depends(verify_bridge)):
+    body = await request.json()
+    req_id = body.get("id")
+    if not req_id:
+        raise HTTPException(400, "missing id")
+    response = body.get("response")
+    if not isinstance(response, dict):
+        raise HTTPException(400, "missing response")
+    mcp_proxy.put_response(req_id, response)
+    return {"status": "ok"}
 
 
 # ── Speech-to-text (AWS Transcribe) ───────────────────────────

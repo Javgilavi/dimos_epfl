@@ -5,8 +5,8 @@ Usage:
     python run_bridges.py --cloud-url http://<ec2-ip>:8080
 
 Spawns (all restart automatically on crash):
-  ws_bridge.py      — Socket.IO bridge (DimOS viz events: pose, costmap, path)
-  camera_bridge.py  — Camera frames (LCM / HTTP / RTSP, auto-detected)
+  mcp_proxy_bridge.py — Cloud Agent MCP requests → local DimOS MCP
+  workstation_yolo.py — Jetson camera → YOLO overlay, DimOS LCM, semantic map
   pc_bridge.py      — LiDAR point cloud (LCM)
   nav_bridge.py     — Pose push + goal forwarding (LCM)
   dimos_bridge.py   — Semantic objects via DimOS MCP (skip with --no-dimos-bridge)
@@ -15,6 +15,10 @@ Cloud side:
     python main.py --server-only           # EC2, no bridges
 Robot side:
     python run_bridges.py --cloud-url http://ec2-ip:8080
+
+If cloud auth is enabled:
+    python run_bridges.py --cloud-url http://ec2-ip:8080 \
+        --bridge-password "$BRIDGE_PASSWORD"
 """
 
 import argparse
@@ -25,6 +29,7 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
 
 
 def _spawn(name: str, cmd: list[str]) -> subprocess.Popen:
@@ -64,29 +69,62 @@ def main() -> None:
     parser.add_argument("--pose-hz",         type=float, default=15.0)
     parser.add_argument("--goal-hz",         type=float, default=5.0)
     parser.add_argument(
+        "--mcp-url",
+        default=os.environ.get("DIMOS_MCP_URL", "http://localhost:9990/mcp"),
+        help="Local DimOS MCP URL forwarded to the cloud Agent",
+    )
+    parser.add_argument(
+        "--bridge-password",
+        default=os.environ.get("BRIDGE_PASSWORD", ""),
+        help="Shared BRIDGE_PASSWORD used by the cloud server, if enabled",
+    )
+    parser.add_argument("--no-mcp-proxy", action="store_true")
+    parser.add_argument("--no-yolo", action="store_true")
+    parser.add_argument(
+        "--with-camera-bridge",
+        action="store_true",
+        help="Also run camera_bridge.py. Usually unnecessary because YOLO publishes camera frames + LCM.",
+    )
+    parser.add_argument("--yolo-model", default=os.environ.get("YOLO_MODEL", "yolo11s-seg.pt"))
+    parser.add_argument("--yolo-imgsz", type=int, default=int(os.environ.get("YOLO_IMGSZ", "480")))
+    parser.add_argument("--yolo-conf", type=float, default=float(os.environ.get("YOLO_CONF", "0.30")))
+    parser.add_argument("--semantic-threshold", type=float, default=float(os.environ.get("YOLO_SEMANTIC_THRESHOLD", "0.70")))
+    parser.add_argument("--semantic-hz", type=float, default=float(os.environ.get("YOLO_SEMANTIC_HZ", "1.0")))
+    parser.add_argument("--ui-frame-hz", type=float, default=float(os.environ.get("YOLO_UI_FRAME_HZ", "12.0")))
+    parser.add_argument(
         "--no-dimos-bridge", action="store_true",
         help="Skip dimos_bridge.py (DimOS MCP semantic objects)",
     )
     args = parser.parse_args()
 
     py    = sys.executable
-    cloud = args.cloud_url
+    cloud = args.cloud_url.rstrip("/")
     rid   = args.robot_id
+    if args.bridge_password:
+        os.environ["BRIDGE_PASSWORD"] = args.bridge_password
+    os.environ["CLOUD_URL"] = cloud
+    os.environ["ROBOT_ID"] = rid
+    os.environ["DIMOS_MCP_URL"] = args.mcp_url
 
     bridge_specs: list[tuple[str, list[str]]] = [
-        ("ws_bridge", [
-            py, "-u", os.path.join(HERE, "ws_bridge.py"),
+        ("mcp_proxy_bridge", [
+            py, "-u", os.path.join(HERE, "mcp_proxy_bridge.py"),
             "--cloud-url", cloud,
-            "--robot-id", rid,
-            "--ws-url", args.ws_url,
+            "--mcp-url", args.mcp_url,
         ]),
-        ("camera_bridge", [
-            py, "-u", os.path.join(HERE, "camera_bridge.py"),
+        ("workstation_yolo", [
+            py, "-u", os.path.join(ROOT, "scripts", "workstation_yolo.py"),
+            "--stream-url", args.camera_http_url,
+            "--model", args.yolo_model,
+            "--imgsz", str(args.yolo_imgsz),
+            "--conf", str(args.yolo_conf),
+            "--feed-dimos",
             "--cloud-url", cloud,
             "--robot-id", rid,
-            "--source", args.camera_source,
-            "--fps", str(args.camera_fps),
-            "--http-url", args.camera_http_url,
+            "--semantic-threshold", str(args.semantic_threshold),
+            "--semantic-hz", str(args.semantic_hz),
+            "--ui-frame-hz", str(args.ui_frame_hz),
+            "--headless",
         ]),
         ("pc_bridge", [
             py, "-u", os.path.join(HERE, "pc_bridge.py"),
@@ -102,11 +140,25 @@ def main() -> None:
             "--goal-hz", str(args.goal_hz),
         ]),
     ]
+    if args.no_mcp_proxy:
+        bridge_specs = [b for b in bridge_specs if b[0] != "mcp_proxy_bridge"]
+    if args.no_yolo:
+        bridge_specs = [b for b in bridge_specs if b[0] != "workstation_yolo"]
+    if args.no_yolo or args.with_camera_bridge:
+        bridge_specs.insert(1, ("camera_bridge", [
+            py, "-u", os.path.join(HERE, "camera_bridge.py"),
+            "--cloud-url", cloud,
+            "--robot-id", rid,
+            "--source", args.camera_source,
+            "--fps", str(args.camera_fps),
+            "--http-url", args.camera_http_url,
+        ]))
     if not args.no_dimos_bridge:
         bridge_specs.append(("dimos_bridge", [
             py, "-u", os.path.join(HERE, "dimos_bridge.py"),
             "--cloud-url", cloud,
             "--robot-id", rid,
+            "--mcp-url", args.mcp_url,
         ]))
 
     procs: list[tuple[str, subprocess.Popen]] = [

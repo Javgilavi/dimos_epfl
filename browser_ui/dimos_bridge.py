@@ -36,6 +36,14 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+_BRIDGE_PW = os.environ.get("BRIDGE_PASSWORD", "")
+
+
+def _bridge_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
+    headers = dict(extra or {})
+    if _BRIDGE_PW:
+        headers["X-Bridge-Password"] = _BRIDGE_PW
+    return headers
 
 
 # ── DimOS MCP Client (minimal, no go2_dimos dependency) ──────
@@ -270,6 +278,7 @@ def push_to_cloud(cloud_url: str, robot_id: str, objects: list[dict]) -> bool:
         resp = httpx.post(
             f"{cloud_url}/ingest",
             json={"robot_id": robot_id, "objects": objects},
+            headers=_bridge_headers(),
             timeout=3.0,
         )
         return resp.status_code == 200

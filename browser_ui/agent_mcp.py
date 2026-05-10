@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # ── Configuration ─────────────────────────────────────────────
 
 MCP_URL = os.environ.get("DIMOS_MCP_URL", "http://localhost:9990/mcp")
+MCP_TRANSPORT = os.environ.get("MCP_TRANSPORT", "auto").lower()
 AWS_REGION = os.environ.get("AWS_REGION", "us-west-2")
 BEDROCK_MODEL_ID = os.environ.get(
     "BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6"
@@ -167,6 +168,15 @@ class MCPClient:
         self.timeout = timeout
         self._next_id = 0
         self._client = httpx.Client(timeout=timeout)
+        self._use_bridge = MCP_TRANSPORT == "bridge"
+
+    def _bridge_rpc(self, body: dict) -> dict:
+        import mcp_proxy
+
+        data = mcp_proxy.submit(body, timeout=self.timeout + 10.0)
+        if "error" in data:
+            raise RuntimeError(f"MCP bridge error: {data['error']}")
+        return data.get("result", {})
 
     def _rpc(self, method: str, params: dict | None = None) -> dict:
         self._next_id += 1
@@ -177,15 +187,23 @@ class MCPClient:
         }
         if params is not None:
             body["params"] = params
-        resp = self._client.post(
-            self.url,
-            json=body,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream",
-            },
-        )
-        resp.raise_for_status()
+        if self._use_bridge:
+            return self._bridge_rpc(body)
+        try:
+            resp = self._client.post(
+                self.url,
+                json=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+            )
+            resp.raise_for_status()
+        except Exception:
+            if MCP_TRANSPORT == "auto":
+                self._use_bridge = True
+                return self._bridge_rpc(body)
+            raise
         # Server may stream SSE for long-running tools; for our short calls it
         # returns plain JSON. Be lenient.
         text = resp.text

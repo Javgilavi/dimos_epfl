@@ -139,13 +139,25 @@ the execution path.
 ## Run the bridges (laptop, with DimOS running)
 
 ```bash
-# Point nav/pointcloud bridges at EC2
-python nav_bridge.py --cloud-url http://<ec2-public-ip>:8080
-python pc_bridge.py --cloud-url http://<ec2-public-ip>:8080
+# EC2/server:
+#   AUTO_BRIDGES=false keeps the server cloud-only.
+#   MCP_TRANSPORT=bridge makes Agent tool calls wait for the laptop MCP proxy.
+AUTO_BRIDGES=false MCP_TRANSPORT=bridge \
+uvicorn main:app --host 0.0.0.0 --port 8080
 
-# Or locally
-python nav_bridge.py --cloud-url http://localhost:8080
-python pc_bridge.py --cloud-url http://localhost:8080
+# Laptop/robot side, after DimOS is running:
+python run_bridges.py --cloud-url http://<ec2-public-ip>:8080
+```
+
+`run_bridges.py` starts the local-only processes that EC2 cannot access:
+`mcp_proxy_bridge.py` (cloud Agent → local DimOS MCP), `workstation_yolo.py`
+(Jetson camera + YOLO11 overlay + semantic map), `pc_bridge.py`, `nav_bridge.py`,
+and `dimos_bridge.py`. If the server uses `BRIDGE_PASSWORD`, pass the same value:
+
+```bash
+python run_bridges.py \
+  --cloud-url http://<ec2-public-ip>:8080 \
+  --bridge-password "$BRIDGE_PASSWORD"
 ```
 
 ## Environment variables
@@ -162,6 +174,9 @@ python pc_bridge.py --cloud-url http://localhost:8080
 | `PC_MISS_DECAY` | `0.72` | Confidence multiplier when an observed-area voxel is missed in a fresh scan |
 | `PC_TIME_DECAY_PER_SEC` | `0.015` | Slow global confidence decay so old false positives eventually disappear |
 | `PC_DELETE_SCORE` | `0.35` | Delete voxels below this confidence |
+| `AUTO_BRIDGES` | `false` | `true` only for single-machine local dev; EC2 should stay server-only |
+| `MCP_TRANSPORT` | `auto` | Use `bridge` on EC2 so Agent MCP calls route through laptop `run_bridges.py` |
+| `BRIDGE_PASSWORD` | — | Optional shared secret required by bridge ingest/proxy endpoints |
 | `CAMERA_BRIDGE_SOURCE` | `auto` | Camera source for auto-spawn: `auto`, `http`, `dimos`, `rtsp`, or `opencv` |
 | `CAMERA_HTTP_URL` | `http://192.168.123.18:8888/frame` | Jetson/new USB camera JPEG frame URL |
 | `CAMERA_PUBLISH_LCM` | `true` | Republish non-DimOS camera frames to DimOS `/color_image` LCM |
