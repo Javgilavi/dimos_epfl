@@ -17,7 +17,7 @@ from fastapi import HTTPException, Query, Request
 BRIDGE_PASSWORD    = os.environ.get("BRIDGE_PASSWORD", "")
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 MAX_VIEWERS        = int(os.environ.get("MAX_VIEWERS", "2"))
-SESSION_TTL        = float(os.environ.get("SESSION_TTL", "3600"))
+SESSION_TTL        = float(os.environ.get("SESSION_TTL", "30"))
 
 # token → last_active timestamp (sliding-window expiry)
 _sessions: dict[str, float] = {}
