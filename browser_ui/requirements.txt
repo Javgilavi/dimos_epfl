@@ -1,0 +1,16 @@
+# Web server
+fastapi>=0.110.0
+uvicorn>=0.29.0
+pydantic>=2.0.0
+
+# HTTP client (cloud push, bridge)
+httpx>=0.27.0
+
+# DimOS Socket.IO bridge
+python-socketio[asyncio_client]>=5.11.0
+
+# AWS — Bedrock inference + S3 world store
+boto3>=1.34.0
+
+# Standard library only below this line (no install needed):
+# asyncio, base64, json, logging, os, threading, time, zlib
