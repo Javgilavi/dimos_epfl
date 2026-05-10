@@ -759,8 +759,32 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .layout { display: grid; height: calc(100vh - 44px);
               grid-template-columns: 1fr 5px clamp(280px, var(--sidebar-w, 32vw), 60vw); }
     @media (max-width: 768px) {
-      .layout { grid-template-columns: 1fr; grid-template-rows: 45vh 5px 1fr; }
+      .layout { grid-template-columns: 1fr; grid-template-rows: 52vh 5px 1fr; }
+      #h-resize { display: none; }
+      #v-resize { display: none !important; }
+      /* Mobile tab bar */
+      #mobile-tabs { display: flex !important; }
+      /* On mobile each panel fills whatever space remains below the tab bar */
+      #chat-section { display: none !important; flex: 1 1 auto; }
+      #chat-section.m-active { display: flex !important; }
+      #bottom-panel { display: none !important; flex: 1 1 auto; }
+      #bottom-panel.m-active { display: flex !important; }
+      /* Camera-only: hide objects */
+      #bottom-panel.m-cam #obj-section { display: none; }
+      #bottom-panel.m-cam #cam-section { flex: 1 1 auto; min-height: 0; }
+      /* Objects-only: hide camera */
+      #bottom-panel.m-obj #cam-section { display: none; }
+      #bottom-panel.m-obj #obj-section { flex: 1 1 auto; overflow-y: auto; }
     }
+    /* Mobile tab bar — hidden on desktop */
+    #mobile-tabs { display: none; flex-shrink: 0;
+      background: #0d1117; border-bottom: 1px solid #1e2d3d; }
+    .mtab { flex: 1; padding: 9px 4px; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      background: transparent; border: none; border-bottom: 2px solid transparent;
+      color: #556; cursor: pointer; transition: color 0.15s; }
+    .mtab.active { color: #4fc3f7; border-bottom-color: #4fc3f7; }
+    .mtab:hover:not(.active) { color: #99a; }
     #h-resize { background: transparent; cursor: col-resize;
                 border-left: 1px solid #1e2d3d; border-right: 1px solid #1e2d3d;
                 transition: background 0.15s; }
@@ -898,6 +922,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
   <div id="h-resize" title="drag to resize sidebar"></div>
   <div id="sidebar">
+    <!-- Mobile tab bar — hidden on desktop via CSS -->
+    <div id="mobile-tabs">
+      <button class="mtab active" onclick="window._mobileTab('chat')">💬 Chat</button>
+      <button class="mtab"        onclick="window._mobileTab('cam')">📷 Camera</button>
+      <button class="mtab"        onclick="window._mobileTab('obj')">📋 Objects</button>
+    </div>
     <div id="chat-section">
       <div class="mode-toggle">
         <button class="mode-btn active" id="mode-ask"
@@ -1260,6 +1290,34 @@ window._mic = (function() {
     try { vHandle.releasePointerCapture(e.pointerId); } catch(_) {}
   });
 })();
+
+/* ── Mobile tabs ─────────────────────────────────────────────── */
+window._mobileTab = function(tab) {
+  document.querySelectorAll('.mtab').forEach(function(b) { b.classList.remove('active'); });
+  const btn = document.querySelector('.mtab[onclick*="\'' + tab + '\'"]');
+  if (btn) btn.classList.add('active');
+
+  const chat   = document.getElementById('chat-section');
+  const bottom = document.getElementById('bottom-panel');
+
+  chat.classList.remove('m-active');
+  bottom.classList.remove('m-active', 'm-cam', 'm-obj');
+
+  if (tab === 'chat') {
+    chat.classList.add('m-active');
+  } else if (tab === 'cam') {
+    bottom.classList.add('m-active', 'm-cam');
+    // Refresh camera stream src in case it wasn't set while hidden
+    _initCamStream();
+  } else {
+    bottom.classList.add('m-active', 'm-obj');
+  }
+};
+
+// Initialise mobile layout on load
+if (window.innerWidth <= 768) {
+  window._mobileTab('chat');
+}
 </script>
 
 <script type="module">
@@ -1281,8 +1339,9 @@ scene.background = new THREE.Color(0x080c10);
 scene.fog = new THREE.FogExp2(0x080c10, 0.03);
 
 // ── Camera ────────────────────────────────────────────────────
+const _isMobile = window.innerWidth <= 768;
 const camera = new THREE.PerspectiveCamera(55, panel.clientWidth / panel.clientHeight, 0.01, 400);
-camera.position.set(0, 10, 14);
+camera.position.set(0, _isMobile ? 20 : 10, _isMobile ? 26 : 14);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -1415,8 +1474,9 @@ function updateRobot(rp) {
   // First-time camera framing once we have a real pose
   if (!cameraFitted) {
     cameraFitted = true;
+    const _fd = _isMobile ? 10 : 4;
     controls.target.set(_robotX, 0.3, -_robotY);
-    camera.position.set(_robotX + 4, 4, -_robotY + 4);
+    camera.position.set(_robotX + _fd, _fd, -_robotY + _fd);
     controls.update();
   }
   updateGoalLine();
@@ -1630,8 +1690,9 @@ function updateLidar(data) {
   // Frame the camera once on the first pointcloud arrival, if we don't have pose yet.
   if (!cameraFitted) {
     cameraFitted = true;
+    const _fd = _isMobile ? 10 : 4;
     controls.target.set(_robotX, 0.3, -_robotY);
-    camera.position.set(_robotX + 4, 4, -_robotY + 4);
+    camera.position.set(_robotX + _fd, _fd, -_robotY + _fd);
     controls.update();
   }
 }
