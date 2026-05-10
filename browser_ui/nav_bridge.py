@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
 import threading
 import time
@@ -68,6 +69,13 @@ def run_pose_subscriber(cloud_url: str, robot_id: str, hz: float, lc):
     last_push = 0.0
     latest = [None]
 
+    # Delta-yaw estimation — same approach as the old ws_bridge.py.
+    # We derive heading from consecutive positions rather than trusting msg.yaw
+    # directly, since the LCM odom frame convention differs from what the
+    # Three.js dashboard expects (atan2 gives a consistent CCW angle from +X).
+    _prev_xy: list[tuple[float, float] | None] = [None]
+    _heading: list[float] = [0.0]
+
     def _on_msg(channel, data):
         try:
             latest[0] = PoseStamped.lcm_decode(data)
@@ -85,14 +93,24 @@ def run_pose_subscriber(cloud_url: str, robot_id: str, hz: float, lc):
             continue
         last_push = now
         try:
+            x, y = float(msg.x), float(msg.y)
+
+            # Update heading from position delta when movement exceeds noise floor.
+            if _prev_xy[0] is not None:
+                dx = x - _prev_xy[0][0]
+                dy = y - _prev_xy[0][1]
+                if math.sqrt(dx * dx + dy * dy) > 0.004:  # 4 mm noise filter
+                    _heading[0] = math.atan2(dy, dx)
+            _prev_xy[0] = (x, y)
+
             pose = {
-                "x": float(msg.x),
-                "y": float(msg.y),
+                "x": x,
+                "y": y,
                 "z": float(msg.z),
-                "yaw":   float(msg.yaw),
+                "yaw": _heading[0],   # delta-derived heading for dashboard
                 "pitch": float(msg.pitch),
                 "roll":  float(msg.roll),
-                # quaternion in (qx, qy, qz, qw) for client-side rotation
+                # raw quaternion kept for any consumer that wants the full orientation
                 "qx": float(msg.orientation.x),
                 "qy": float(msg.orientation.y),
                 "qz": float(msg.orientation.z),
