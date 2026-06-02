@@ -268,7 +268,7 @@ class NavigationSkillContainer(Module):
         metadata = result.get("metadata")
         if not metadata:
             return None
-        first = metadata[0]
+        first = metadata[0] if isinstance(metadata, list) else metadata
         pos_x = first.get("pos_x", 0)
         pos_y = first.get("pos_y", 0)
         theta = first.get("rot_z", 0)

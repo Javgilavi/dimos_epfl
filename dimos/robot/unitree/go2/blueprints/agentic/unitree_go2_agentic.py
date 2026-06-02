@@ -26,7 +26,7 @@ unitree_go2_agentic = autoconnect(
     unitree_go2_spatial,
     Yolo11DetectionSkill.blueprint(),
     McpServer.blueprint(),
-    McpClient.blueprint(model="bedrock_converse:us.anthropic.claude-sonnet-4-6"),
+    McpClient.blueprint(model="openai:qwen3.5"),
     _common_agentic,
 ).transports(
     {

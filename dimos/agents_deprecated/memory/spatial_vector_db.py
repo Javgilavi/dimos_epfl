@@ -177,8 +177,8 @@ class SpatialVectorDB:
         filtered_results = {"ids": [], "metadatas": [], "distances": []}  # type: ignore[var-annotated]
 
         for i, metadata in enumerate(results["metadatas"]):  # type: ignore[arg-type]
-            item_x = metadata.get("x")
-            item_y = metadata.get("y")
+            item_x = metadata.get("pos_x")
+            item_y = metadata.get("pos_y")
 
             if item_x is not None and item_y is not None:
                 distance = np.sqrt((x - item_x) ** 2 + (y - item_y) ** 2)
