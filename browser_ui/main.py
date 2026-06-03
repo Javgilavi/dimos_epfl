@@ -656,13 +656,31 @@ async def get_live_pose():
 # ── Navigation — goal queue ───────────────────────────────────
 
 _goal_queue: list[dict] = []
+_active_goal: dict | None = None
 
 
 @app.post("/navigate")
 async def navigate_to_point(x: float, y: float, z: float = 0.0):
     """Queue a navigation goal — nav_bridge forwards it to DimOS over LCM."""
-    _goal_queue.append({"x": x, "y": y, "z": z, "ts": time.time()})
+    global _active_goal
+    goal = {"x": x, "y": y, "z": z, "ts": time.time()}
+    _goal_queue.append(goal)
+    _active_goal = goal
     return {"status": "queued", "target": {"x": x, "y": y, "z": z}}
+
+
+@app.get("/goal/active")
+async def get_active_goal():
+    """Current navigation goal — polled by all dashboard viewers."""
+    return _active_goal or {}
+
+
+@app.post("/goal/clear")
+async def clear_active_goal():
+    """Called by any viewer when the robot reaches the goal."""
+    global _active_goal
+    _active_goal = None
+    return {"status": "cleared"}
 
 
 @app.get("/goals/pending")
