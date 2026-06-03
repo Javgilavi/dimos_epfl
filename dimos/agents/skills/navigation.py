@@ -41,7 +41,7 @@ class NavigationSkillContainer(Module):
     _latest_image: Image | None = None
     _latest_odom: PoseStamped | None = None
     _skill_started: bool = False
-    _similarity_threshold: float = 0.23
+    _similarity_threshold: float = 0.27
 
     _spatial_memory: SpatialMemorySpec
     _navigation: NavigationInterfaceSpec

@@ -199,6 +199,68 @@ class SpatialVectorDB:
 
         return self._process_query_results(filtered_results)
 
+    def spatial_range_retrieval(
+        self, x: float, y: float, radius: float, text_query: str, limit: int = 5
+    ) -> list[dict]:  # type: ignore[type-arg]
+        """
+        Spatial-Range Retrieval (SRR) inspired by Meta-Memory.
+
+        Retrieves all memories within a radius of (x, y), then re-ranks them
+        by semantic similarity to the text query. This combines spatial
+        proximity with semantic relevance.
+
+        Args:
+            x: Center X coordinate
+            y: Center Y coordinate
+            radius: Search radius in meters
+            text_query: Text to re-rank results by semantic similarity
+            limit: Maximum number of results to return
+
+        Returns:
+            List of results sorted by semantic similarity, filtered by spatial range
+        """
+        results = self.image_collection.get(include=["metadatas", "embeddings"])
+
+        if not results or not results["ids"]:
+            return []
+
+        # Filter by spatial range
+        candidate_ids = []
+        candidate_embeddings = []
+        candidate_metadatas = []
+
+        for i, metadata in enumerate(results["metadatas"]):
+            item_x = metadata.get("pos_x")
+            item_y = metadata.get("pos_y")
+            if item_x is None or item_y is None:
+                continue
+            dist = np.sqrt((x - item_x) ** 2 + (y - item_y) ** 2)
+            if dist <= radius:
+                candidate_ids.append(results["ids"][i])
+                candidate_embeddings.append(results["embeddings"][i])
+                candidate_metadatas.append(metadata)
+
+        if not candidate_ids:
+            return []
+
+        # Re-rank by semantic similarity to text query
+        text_embedding = self.embedding_provider.get_text_embedding(text_query)
+        similarities = [
+            float(np.dot(text_embedding, np.array(emb)))
+            for emb in candidate_embeddings
+        ]
+
+        # Sort by similarity descending
+        ranked_indices = np.argsort(similarities)[::-1][:limit]
+
+        ranked_results = {
+            "ids": [candidate_ids[i] for i in ranked_indices],
+            "metadatas": [candidate_metadatas[i] for i in ranked_indices],
+            "distances": [1.0 - similarities[i] for i in ranked_indices],
+        }
+
+        return self._process_query_results(ranked_results)
+
     def _process_query_results(self, results) -> list[dict]:  # type: ignore[no-untyped-def, type-arg]
         """Process query results to include decoded images."""
         if not results or not results["ids"]:
@@ -234,16 +296,20 @@ class SpatialVectorDB:
 
         return processed_results
 
-    def query_by_text(self, text: str, limit: int = 5) -> list[dict]:  # type: ignore[type-arg]
+    def query_by_text(
+        self, text: str, limit: int = 5, robot_position: tuple[float, float] | None = None
+    ) -> list[dict]:  # type: ignore[type-arg]
         """
         Query the vector database for images matching the provided text description.
 
-        This method uses CLIP's text-to-image matching capability to find images
-        that semantically match the text query (e.g., "where is the kitchen").
+        Uses a coarse-to-fine approach: retrieves more candidates than needed,
+        then re-ranks by combining semantic similarity with spatial proximity
+        to the robot's current position (if provided).
 
         Args:
             text: Text query to search for
             limit: Maximum number of results to return
+            robot_position: Optional (x, y) tuple of robot's current position for spatial re-ranking
 
         Returns:
             List of results, each containing the image, its metadata, and similarity score
@@ -255,15 +321,50 @@ class SpatialVectorDB:
 
         text_embedding = self.embedding_provider.get_text_embedding(text)
 
+        # Coarse retrieval: fetch more candidates than needed
+        coarse_limit = limit * 3 if robot_position else limit
+
         results = self.image_collection.query(
             query_embeddings=[text_embedding.tolist()],
-            n_results=limit,
+            n_results=coarse_limit,
             include=["documents", "metadatas", "distances"],
         )
 
         logger.info(
             f"Text query: '{text}' returned {len(results['ids'] if 'ids' in results else [])} results"
         )
+
+        # Fine re-ranking: combine semantic score with spatial proximity
+        if robot_position and results and results["ids"] and results["ids"][0]:
+            ids = results["ids"][0]
+            metadatas = results["metadatas"][0]
+            distances = results["distances"][0]
+
+            scored = []
+            for i in range(len(ids)):
+                semantic_score = 1.0 - distances[i]  # cosine similarity
+                meta = metadatas[i]
+                px = meta.get("pos_x")
+                py = meta.get("pos_y")
+                spatial_bonus = 0.0
+                if px is not None and py is not None:
+                    spatial_dist = np.sqrt(
+                        (robot_position[0] - px) ** 2 + (robot_position[1] - py) ** 2
+                    )
+                    # Closer entries get a bonus (decays with distance, max ~0.05)
+                    spatial_bonus = 0.05 / (1.0 + spatial_dist)
+                scored.append((i, semantic_score + spatial_bonus))
+
+            # Sort by combined score descending
+            scored.sort(key=lambda x: x[1], reverse=True)
+            top_indices = [s[0] for s in scored[:limit]]
+
+            results = {
+                "ids": [[ids[i] for i in top_indices]],
+                "metadatas": [[metadatas[i] for i in top_indices]],
+                "distances": [[distances[i] for i in top_indices]],
+            }
+
         return self._process_query_results(results)
 
     def get_all_locations(self) -> list[tuple[float, float, float]]:

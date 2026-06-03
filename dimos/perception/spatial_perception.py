@@ -258,6 +258,13 @@ class SpatialMemory(Module):
             # Get embedding for the frame
             frame_embedding = self.embedding_provider.get_embedding(self._latest_video_frame)
 
+            # Deduplication: skip if too similar to an existing entry
+            if self.stored_frame_count > 0:
+                nearest = self.vector_db.query_by_embedding(frame_embedding, limit=1)
+                if nearest and nearest[0].get("distance", 1.0) < 0.05:
+                    logger.debug("Frame too similar to existing entry (dedup), skipping")
+                    return
+
             frame_id = f"frame_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
             # Get euler angles from quaternion orientation for metadata
             euler = tf.rotation.to_euler()
@@ -460,7 +467,10 @@ class SpatialMemory(Module):
             List of results, each containing the image, its metadata, and similarity score
         """
         logger.info(f"Querying spatial memory with text: '{text}'")
-        return self.vector_db.query_by_text(text, limit)
+        robot_position = None
+        if self.last_position is not None:
+            robot_position = (float(self.last_position.x), float(self.last_position.y))
+        return self.vector_db.query_by_text(text, limit, robot_position=robot_position)
 
     @rpc
     def add_robot_location(self, location: RobotLocation) -> bool:
